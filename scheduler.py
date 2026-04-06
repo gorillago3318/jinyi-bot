@@ -18,6 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot
 
 from content import generate_weekly_digest, generate_holiday_greeting
+from researcher import research_trending_content
 from publisher import publish_to_facebook
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,25 @@ async def job_check_holidays(bot: Bot) -> None:
 
 
 # ─────────────────────────────────────────────
+#  Job: Weekly Content Research (Monday 9am)
+# ─────────────────────────────────────────────
+
+async def job_content_research(bot: Bot) -> None:
+    logger.info("Running Weekly Content Research job...")
+    try:
+        report = research_trending_content(num_ideas=5)
+        await bot.send_message(
+            OWNER_CHAT_ID,
+            report,
+            parse_mode="Markdown",
+        )
+        logger.info("Content research delivered to owner.")
+    except Exception as e:
+        logger.error(f"Content research job FAILED: {e}")
+        await bot.send_message(OWNER_CHAT_ID, f"❌ Content research failed: {e}")
+
+
+# ─────────────────────────────────────────────
 #  Scheduler setup
 # ─────────────────────────────────────────────
 
@@ -238,6 +258,19 @@ def build_scheduler(bot: Bot) -> AsyncIOScheduler:
         args=[bot],
         id="holiday_job",
         name="Holiday Greetings",
+        replace_existing=True,
+    )
+
+    # Content Research — every Monday 9:00am (小红书 + Douyin trending ideas)
+    scheduler.add_job(
+        job_content_research,
+        trigger="cron",
+        day_of_week="0",  # Monday
+        hour=9,
+        minute=0,
+        args=[bot],
+        id="research_job",
+        name="Weekly Content Research",
         replace_existing=True,
     )
 

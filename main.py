@@ -44,6 +44,7 @@ from content import (
 )
 from publisher import publish_all
 from scheduler import build_scheduler, load_dyk_bank, count_unused_dyk
+from researcher import research_trending_content, research_with_kimi_search
 
 # ── Logging ──────────────────────────────────
 logging.basicConfig(
@@ -99,6 +100,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/image — Attach image to draft\n"
         "/status — Show scheduled queue\n"
         "/bank — DYK bank count\n"
+        "/research — 小红书 & Douyin trending ideas\n"
         "/cancel — Discard current draft\n\n"
         "Or just send me:\n"
         "• A *voice note* → I'll draft a post from it\n"
@@ -247,6 +249,33 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines.append(f"• *{job.name}* — next: {next_str}")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ─────────────────────────────────────────────
+#  /research — on-demand 小红书 / Douyin research
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_research(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    await update.message.reply_text(
+        "🔍 Researching 小红书 & Douyin trends... (takes ~30 seconds)"
+    )
+    try:
+        if args:
+            # Targeted search on a specific topic
+            query = " ".join(args)
+            result = research_with_kimi_search(query)
+            await update.message.reply_text(
+                f"🔍 *Research: {query}*\n\n{result}",
+                parse_mode="Markdown",
+            )
+        else:
+            # Full weekly report — 5 ideas
+            report = research_trending_content(num_ideas=5)
+            await update.message.reply_text(report, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Research failed: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -439,13 +468,14 @@ def main() -> None:
     )
 
     # Commands
-    app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("draft",   cmd_draft))
-    app.add_handler(CommandHandler("approve", cmd_approve))
-    app.add_handler(CommandHandler("image",   cmd_image, filters=filters.PHOTO))
-    app.add_handler(CommandHandler("cancel",  cmd_cancel))
-    app.add_handler(CommandHandler("status",  cmd_status))
-    app.add_handler(CommandHandler("bank",    cmd_bank))
+    app.add_handler(CommandHandler("start",    cmd_start))
+    app.add_handler(CommandHandler("draft",    cmd_draft))
+    app.add_handler(CommandHandler("approve",  cmd_approve))
+    app.add_handler(CommandHandler("image",    cmd_image, filters=filters.PHOTO))
+    app.add_handler(CommandHandler("cancel",   cmd_cancel))
+    app.add_handler(CommandHandler("status",   cmd_status))
+    app.add_handler(CommandHandler("bank",     cmd_bank))
+    app.add_handler(CommandHandler("research", cmd_research))
 
     # Media handlers (Tier 3)
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
