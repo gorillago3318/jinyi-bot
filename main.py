@@ -1,0 +1,460 @@
+"""
+main.py — JinYi Telegram Content Bot
+Phase 1 Steps 7–10: Tier 1 automation + Tier 2 approval flow + Tier 3 personal content
+
+Commands:
+  /approve  — publish current draft to all platforms
+  /image    — attach an image to current draft
+  /draft    — request a new Tier 2 draft
+  /status   — show scheduled post queue
+  /bank     — show DYK bank count
+  /cancel   — cancel current draft
+
+Tier 3 inputs (no command needed):
+  - Voice note   → Claude transcribes → draft
+  - Photo + caption → Claude writes post
+  - Text message → Claude drafts post
+"""
+
+import asyncio
+import logging
+import os
+import tempfile
+from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
+from telegram import Update, Bot
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+
+load_dotenv()
+
+from content import (
+    generate_tier2_draft,
+    revise_draft,
+    draft_from_voice_transcript,
+    draft_from_photo_caption,
+    generate_image_prompt,
+)
+from publisher import publish_all
+from scheduler import build_scheduler, load_dyk_bank, count_unused_dyk
+
+# ── Logging ──────────────────────────────────
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+# ── Config ───────────────────────────────────
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OWNER_CHAT_ID = int(os.getenv("OWNER_CHAT_ID", "0"))
+TELEGRAM_CHANNEL = os.getenv("TELEGRAM_CHANNEL", "")
+
+# ── In-memory draft state per chat ───────────
+# Stores: { chat_id: { "draft": str, "image_path": str|None, "history": list } }
+draft_state: dict[int, dict] = {}
+
+TIER2_BRIEF_TOPICS = [
+    "the health benefits of bird's nest for new mothers",
+    "why Borneo swiftlet nests command a premium price",
+    "what to look for when buying authentic bird's nest",
+    "JinYi's 20+ years of expertise in Sabah and Sarawak",
+    "the difference between white nest, red nest, and cave nest",
+    "sustainable harvesting practices in swiftlet farming",
+    "how to identify premium grade vs lower grade bird's nest",
+    "investing in a swiftlet house: what you need to know",
+    "the science behind bird's nest and skin health",
+    "how climate affects nest production in Borneo",
+]
+
+
+def owner_only(func):
+    """Decorator — restrict handler to owner chat ID only."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != OWNER_CHAT_ID:
+            await update.message.reply_text("⛔ Authorised users only.")
+            return
+        return await func(update, context)
+    return wrapper
+
+
+# ─────────────────────────────────────────────
+#  /start
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "👋 *JinYi Content Bot online.*\n\n"
+        "Commands:\n"
+        "/draft — Request a new post draft\n"
+        "/approve — Publish current draft\n"
+        "/image — Attach image to draft\n"
+        "/status — Show scheduled queue\n"
+        "/bank — DYK bank count\n"
+        "/cancel — Discard current draft\n\n"
+        "Or just send me:\n"
+        "• A *voice note* → I'll draft a post from it\n"
+        "• A *photo with caption* → I'll write the post\n"
+        "• A *text message* → I'll turn it into a draft",
+        parse_mode="Markdown",
+    )
+
+
+# ─────────────────────────────────────────────
+#  /draft — Tier 2: proactive draft request
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    # Use provided brief or pick a random topic
+    if args:
+        brief = " ".join(args)
+    else:
+        import random
+        brief = random.choice(TIER2_BRIEF_TOPICS)
+
+    await update.message.reply_text(f"✍️ Drafting post about: _{brief}_...", parse_mode="Markdown")
+
+    try:
+        draft = generate_tier2_draft(brief)
+        draft_state[chat_id] = {
+            "draft": draft,
+            "image_path": None,
+            "history": [
+                {"role": "user", "content": f"Write a post about: {brief}"},
+                {"role": "assistant", "content": draft},
+            ],
+        }
+
+        img_prompt = generate_image_prompt(draft)
+
+        await update.message.reply_text(
+            f"{draft}\n\n"
+            "———\n"
+            "Reply with feedback to revise, /approve to publish, or /cancel to discard.\n\n"
+            f"🖼️ *Image prompt for Genspark:*\n`{img_prompt}`",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.error(f"Draft generation failed: {e}")
+        await update.message.reply_text(f"❌ Draft failed: {e}")
+
+
+# ─────────────────────────────────────────────
+#  /approve — publish current draft
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    state = draft_state.get(chat_id)
+
+    if not state or not state.get("draft"):
+        await update.message.reply_text("❌ No draft to approve. Use /draft to create one.")
+        return
+
+    await update.message.reply_text("📤 Publishing...")
+
+    results = publish_all(
+        text=state["draft"],
+        telegram_channel=TELEGRAM_CHANNEL or None,
+        image_path=state.get("image_path"),
+    )
+
+    summary_lines = []
+    for platform, ok in results.items():
+        icon = "✅" if ok else "❌"
+        summary_lines.append(f"{icon} {platform.capitalize()}")
+
+    await update.message.reply_text(
+        "Published:\n" + "\n".join(summary_lines)
+    )
+
+    # Clean up image temp file if it exists
+    img_path = state.get("image_path")
+    if img_path and Path(img_path).exists():
+        try:
+            Path(img_path).unlink()
+        except Exception:
+            pass
+
+    del draft_state[chat_id]
+
+
+# ─────────────────────────────────────────────
+#  /image — attach image to current draft
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if chat_id not in draft_state:
+        await update.message.reply_text("❌ No active draft. Create one first with /draft.")
+        return
+
+    if update.message.photo:
+        photo = update.message.photo[-1]  # highest resolution
+        file = await context.bot.get_file(photo.file_id)
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        await file.download_to_drive(tmp.name)
+        draft_state[chat_id]["image_path"] = tmp.name
+        await update.message.reply_text("✅ Image attached. Use /approve to publish.")
+    else:
+        await update.message.reply_text("Please send an image with the /image caption.")
+
+
+# ─────────────────────────────────────────────
+#  /cancel
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if chat_id in draft_state:
+        del draft_state[chat_id]
+        await update.message.reply_text("🗑️ Draft discarded.")
+    else:
+        await update.message.reply_text("No active draft.")
+
+
+# ─────────────────────────────────────────────
+#  /status — show scheduled queue
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    scheduler = context.bot_data.get("scheduler")
+    if not scheduler:
+        await update.message.reply_text("Scheduler not running.")
+        return
+
+    jobs = scheduler.get_jobs()
+    lines = ["📅 *Scheduled Jobs:*\n"]
+    for job in jobs:
+        next_run = job.next_run_time
+        next_str = next_run.strftime("%a %d %b %Y, %I:%M %p MYT") if next_run else "N/A"
+        lines.append(f"• *{job.name}* — next: {next_str}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ─────────────────────────────────────────────
+#  /bank — show DYK bank count
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_bank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    bank = load_dyk_bank()
+    unused = count_unused_dyk(bank)
+    total = len(bank)
+    await update.message.reply_text(
+        f"📚 *DYK Bank:* {unused}/{total} unused posts remaining.\n\n"
+        "Posts are sent Tue + Thu at 10am. "
+        f"At 2 posts/week, current bank covers ~{unused // 2} weeks.",
+        parse_mode="Markdown",
+    )
+
+
+# ─────────────────────────────────────────────
+#  Text message handler — Tier 2 revision / Tier 3 brief
+# ─────────────────────────────────────────────
+
+@owner_only
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    text = update.message.text.strip()
+
+    state = draft_state.get(chat_id)
+
+    if state and state.get("draft"):
+        # In revision loop — treat message as feedback
+        await update.message.reply_text("✏️ Revising...")
+        try:
+            revised = revise_draft(state["draft"], text, state["history"])
+            state["history"].append({"role": "user", "content": text})
+            state["history"].append({"role": "assistant", "content": revised})
+            # Keep history to last 10 messages
+            if len(state["history"]) > 10:
+                state["history"] = state["history"][-10:]
+            state["draft"] = revised
+
+            img_prompt = generate_image_prompt(revised)
+
+            await update.message.reply_text(
+                f"{revised}\n\n"
+                "———\n"
+                "Reply with more feedback, /approve to publish, or /cancel to discard.\n\n"
+                f"🖼️ *Updated image prompt:*\n`{img_prompt}`",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Revision failed: {e}")
+    else:
+        # No active draft — treat as Tier 3 text brief
+        await update.message.reply_text("✍️ Drafting from your brief...")
+        try:
+            draft = generate_tier2_draft(text)
+            draft_state[chat_id] = {
+                "draft": draft,
+                "image_path": None,
+                "history": [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": draft},
+                ],
+            }
+            img_prompt = generate_image_prompt(draft)
+            await update.message.reply_text(
+                f"{draft}\n\n"
+                "———\n"
+                "Reply with feedback to revise, /approve to publish, or /cancel to discard.\n\n"
+                f"🖼️ *Image prompt:*\n`{img_prompt}`",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Draft failed: {e}")
+
+
+# ─────────────────────────────────────────────
+#  Voice note handler — Tier 3
+# ─────────────────────────────────────────────
+
+@owner_only
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    await update.message.reply_text("🎙️ Voice note received. Transcribing and drafting...")
+
+    # Download voice file
+    voice = update.message.voice
+    file = await context.bot.get_file(voice.file_id)
+
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        await file.download_to_drive(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        # Use Anthropic to draft from voice note description
+        # (Direct audio transcription would require Whisper/another service)
+        # For now, ask owner to include a caption with key points
+        await update.message.reply_text(
+            "Voice note downloaded ✅\n\n"
+            "Please reply with a text summary of the key points from your voice note "
+            "and I'll draft the post from that. "
+            "(Full audio transcription coming in a future update.)"
+        )
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────
+#  Photo handler — Tier 3
+# ─────────────────────────────────────────────
+
+@owner_only
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    caption = update.message.caption or ""
+
+    if not caption:
+        await update.message.reply_text(
+            "📸 Photo received! Please resend it with a caption describing what it shows, "
+            "and I'll write the full post."
+        )
+        return
+
+    await update.message.reply_text("📸 Photo + caption received. Drafting post...")
+
+    # Save image for potential use in the draft
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    await file.download_to_drive(tmp.name)
+
+    try:
+        draft = draft_from_photo_caption(caption)
+        draft_state[chat_id] = {
+            "draft": draft,
+            "image_path": tmp.name,
+            "history": [
+                {"role": "user", "content": f"Photo caption: {caption}"},
+                {"role": "assistant", "content": draft},
+            ],
+        }
+        await update.message.reply_text(
+            f"{draft}\n\n"
+            "———\n"
+            "Image attached ✅ Reply with feedback to revise, /approve to publish, or /cancel.",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        Path(tmp.name).unlink(missing_ok=True)
+        await update.message.reply_text(f"❌ Draft failed: {e}")
+
+
+# ─────────────────────────────────────────────
+#  Main
+# ─────────────────────────────────────────────
+
+async def post_init(application: Application) -> None:
+    """Run after the bot starts — start scheduler and generate holidays if needed."""
+    bot: Bot = application.bot
+    scheduler = build_scheduler(bot)
+    scheduler.start()
+    application.bot_data["scheduler"] = scheduler
+    logger.info("Scheduler started.")
+
+    # Notify owner
+    try:
+        await bot.send_message(
+            OWNER_CHAT_ID,
+            "✅ *JinYi Content Bot is online.*\n\n"
+            "Scheduler running. Use /status to see next scheduled posts.",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.warning(f"Could not send startup message: {e}")
+
+
+def main() -> None:
+    if not BOT_TOKEN:
+        raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
+    if not OWNER_CHAT_ID:
+        raise ValueError("OWNER_CHAT_ID not set in .env")
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+
+    # Commands
+    app.add_handler(CommandHandler("start",   cmd_start))
+    app.add_handler(CommandHandler("draft",   cmd_draft))
+    app.add_handler(CommandHandler("approve", cmd_approve))
+    app.add_handler(CommandHandler("image",   cmd_image, filters=filters.PHOTO))
+    app.add_handler(CommandHandler("cancel",  cmd_cancel))
+    app.add_handler(CommandHandler("status",  cmd_status))
+    app.add_handler(CommandHandler("bank",    cmd_bank))
+
+    # Media handlers (Tier 3)
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    logger.info("Starting JinYi Bot...")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
