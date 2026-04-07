@@ -30,6 +30,8 @@ from content import (
     generate_xhs_post,
     generate_douyin_script,
     generate_wechat_post,
+    generate_blog_article,
+    generate_copypaste_blocks,
 )
 from publisher import publish_all
 from scheduler import build_scheduler, load_dyk_bank, count_unused_dyk
@@ -143,6 +145,25 @@ async def _send_kling_video(context: ContextTypes.DEFAULT_TYPE, chat_id: int, im
             f"⚠️ Kling video generation failed: {e}\n_Content draft is still ready above._",
             parse_mode="Markdown",
         )
+
+
+async def _generate_blog_background(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, topic: str, track: str
+) -> None:
+    """Generate a long-form blog article in background and store in draft_state."""
+    try:
+        loop = asyncio.get_event_loop()
+        article = await loop.run_in_executor(None, generate_blog_article, topic, track)
+        if chat_id in draft_state:
+            draft_state[chat_id]["blog_article"] = article
+        await context.bot.send_message(
+            chat_id,
+            "📝 *Blog article ready* — will be saved to website on /approve.\n\n"
+            "_Preview:_\n" + article[:400] + "…",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.warning(f"Blog article generation failed (non-fatal): {e}")
 
 
 def owner_only(func):
@@ -291,6 +312,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("Publishing...")
         results = publish_all(
             text=state["draft"],
+            blog_text=state.get("blog_article") or state["draft"],
             title=state.get("title", "JinYi Update"),
             track=state.get("track", "investor"),
             telegram_channel=TELEGRAM_CHANNEL or None,
@@ -368,6 +390,7 @@ async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "track": track,
             "image_path": None,
             "video_url": None,
+            "blog_article": None,  # filled by background task
             "history": [
                 {"role": "user", "content": f"Write a {track_label} post about: {brief}"},
                 {"role": "assistant", "content": draft},
@@ -377,11 +400,12 @@ async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"{draft}\n\n———\n"
             "Reply with feedback to revise · /approve to publish · /cancel to discard\n\n"
             f"🖼 *Image prompt:*\n`{img_prompt}`\n\n"
-            "_🎬 Generating Kling visual in background..._",
+            "_🎬 Generating Kling video + 📝 blog article in background..._",
             parse_mode="Markdown",
         )
-        # Fire Kling visual generation in background (non-blocking)
+        # Fire background tasks (non-blocking)
         asyncio.create_task(_send_kling_video(context, chat_id, img_prompt, brief))
+        asyncio.create_task(_generate_blog_background(context, chat_id, brief, track))
     except Exception as e:
         err = str(e)
         if "402" in err or "Insufficient Balance" in err:
@@ -688,10 +712,17 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await update.message.reply_text("Publishing...")
 
+    title = state.get("title", "JinYi Update")
+    track = state.get("track", "investor")
+
+    # Use long-form blog article for website if available, otherwise use social post
+    blog_content = state.get("blog_article") or state["draft"]
+
     results = publish_all(
-        text=state["draft"],
-        title=state.get("title", "JinYi Update"),
-        track=state.get("track", "investor"),
+        text=state["draft"],          # short social post → Facebook + Telegram
+        blog_text=blog_content,       # long article → website blog
+        title=title,
+        track=track,
         telegram_channel=TELEGRAM_CHANNEL or None,
         image_path=state.get("image_path"),
         video_url=state.get("video_url"),
@@ -705,6 +736,31 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         Path(img_path).unlink(missing_ok=True)
 
     del draft_state[chat_id]
+
+    # Send XHS + Douyin copy-paste blocks
+    await update.message.reply_text(
+        "Generating XHS + Douyin copy-paste blocks...", parse_mode="Markdown"
+    )
+    try:
+        loop = asyncio.get_event_loop()
+        blocks = await loop.run_in_executor(None, generate_copypaste_blocks, title, track)
+        # Send in chunks if too long for one message
+        if len(blocks) > 4000:
+            mid = blocks.find("━━━━━━━━━━━━━━━━━━━━\n🎬")
+            await update.message.reply_text(blocks[:mid], parse_mode="Markdown")
+            await update.message.reply_text(blocks[mid:], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(blocks, parse_mode="Markdown")
+    except Exception as e:
+        err = str(e)
+        if "402" in err or "Insufficient Balance" in err:
+            await update.message.reply_text(
+                "⚠️ *DeepSeek out of credit* — copy-paste blocks skipped.\n"
+                "Top up at: platform.deepseek.com",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(f"Copy-paste blocks failed: {e}")
 
 
 # ─────────────────────────────────────────────

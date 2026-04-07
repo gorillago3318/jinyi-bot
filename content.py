@@ -229,6 +229,77 @@ def _claude(system: str, messages: list[dict], max_tokens: int = 1024) -> str:
 
 
 # ─────────────────────────────────────────────
+#  Blog article (long-form, website only)
+# ─────────────────────────────────────────────
+
+CLAUDE_BLOG_INVESTOR = """You are a senior investment writer for JinYi Group — a regulated swiftlet farming
+asset manager with 20+ years of operations across 36+ locations in Sabah and Sarawak, Malaysian Borneo.
+
+Write long-form blog articles for the company website. Audience: high-net-worth individuals
+comparing swiftlet farming against fixed deposits, REITs, and property.
+
+Rules:
+- 600–800 words
+- Professional, data-driven, no hype
+- Structure: sharp opening observation → context/market data → JinYi's position →
+  how it works → risks (honest) → who it's for → closing thought
+- Use subheadings (##) to break up sections
+- Write in first-person plural ("We operate...", "Our investors...")
+- End with a soft call to action: "Speak with our team"
+- No hashtags in the article body
+"""
+
+CLAUDE_BLOG_CONSUMER = """You are a content writer for JinYi Group, a premium swiftlet farming company
+in Sabah and Sarawak, Malaysian Borneo.
+
+Write long-form educational blog articles for health-conscious consumers and bird's nest buyers.
+
+Rules:
+- 600–800 words
+- Warm, credible, educational — like a trusted specialist
+- Structure: engaging opening → background/context → the key information →
+  practical tips or guidance → JinYi's approach → closing recommendation
+- Use subheadings (##) to break up sections
+- Specific and honest — real information, not vague health claims
+- End with an invitation to learn more or try their products
+- No hashtags in the article body
+"""
+
+
+def generate_blog_article(topic: str, track: str = "investor") -> str:
+    """
+    Generate a long-form blog article (600–800 words) for the website.
+    Uses Claude only — no bilingual split (website shows EN with ZH section below).
+    """
+    system = CLAUDE_BLOG_INVESTOR if _resolve_track(track) == "investor" else CLAUDE_BLOG_CONSUMER
+    return _claude(
+        system,
+        [{"role": "user", "content": f"Write a blog article about: {topic}"}],
+        max_tokens=2000,
+    )
+
+
+def generate_copypaste_blocks(topic: str, track: str = "investor") -> str:
+    """
+    Generate ready-to-copy XHS post + Douyin script for manual posting.
+    Returns a formatted string with both blocks.
+    """
+    xhs = generate_xhs_post(topic, track=track)
+    douyin = generate_douyin_script(topic, "30秒", track=track)
+
+    return (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📕 *小红书 Copy-Paste*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{xhs}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🎬 *抖音 Script*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{douyin}"
+    )
+
+
+# ─────────────────────────────────────────────
 #  Bilingual posts (Claude EN + DeepSeek ZH)
 # ─────────────────────────────────────────────
 

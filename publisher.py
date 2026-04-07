@@ -207,6 +207,7 @@ def publish_to_website(
 
 def publish_all(
     text: str,
+    blog_text: str | None = None,
     title: str = "JinYi Update",
     track: str = "investor",
     telegram_channel: str | None = None,
@@ -227,10 +228,10 @@ def publish_all(
 
     results["website"] = publish_to_website(
         title=title,
-        text=text,
+        text=blog_text or text,   # prefer long-form article for blog
         track=track,
         video_url=video_url,
-        image_url=None,  # image_path is local — pass hosted URL if available
+        image_url=None,
     )
 
     if instagram_image_url:
