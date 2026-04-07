@@ -41,6 +41,9 @@ from content import (
     draft_from_voice_transcript,
     draft_from_photo_caption,
     generate_image_prompt,
+    generate_xhs_post,
+    generate_douyin_script,
+    generate_wechat_post,
 )
 from publisher import publish_all
 from scheduler import build_scheduler, load_dyk_bank, count_unused_dyk
@@ -95,12 +98,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 *JinYi Content Bot online.*\n\n"
         "Commands:\n"
-        "/draft — Request a new post draft\n"
+        "/draft — Bilingual post (Claude EN + DeepSeek ZH)\n"
+        "/xhs [topic] — 小红书 post (DeepSeek)\n"
+        "/douyin [topic] — Douyin video script (DeepSeek)\n"
+        "/wechat [topic] — WeChat post (DeepSeek)\n"
+        "/research — 小红书 & Douyin trending ideas (Kimi)\n"
         "/approve — Publish current draft\n"
         "/image — Attach image to draft\n"
-        "/status — Show scheduled queue\n"
+        "/status — Scheduled queue\n"
         "/bank — DYK bank count\n"
-        "/research — 小红书 & Douyin trending ideas\n"
         "/cancel — Discard current draft\n\n"
         "Or just send me:\n"
         "• A *voice note* → I'll draft a post from it\n"
@@ -249,6 +255,104 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines.append(f"• *{job.name}* — next: {next_str}")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ─────────────────────────────────────────────
+#  /xhs — 小红书 post (DeepSeek)
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_xhs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    topic = " ".join(context.args) if context.args else "燕窝的功效与真实体验"
+    await update.message.reply_text(f"📕 生成小红书帖子：_{topic}_...", parse_mode="Markdown")
+    try:
+        post = generate_xhs_post(topic)
+        draft_state[chat_id] = {
+            "draft": post,
+            "image_path": None,
+            "history": [
+                {"role": "user", "content": f"小红书帖子话题：{topic}"},
+                {"role": "assistant", "content": post},
+            ],
+        }
+        img_prompt = generate_image_prompt(post)
+        await update.message.reply_text(
+            f"{post}\n\n———\n"
+            "回复反馈修改，/approve 发布，/cancel 放弃。\n\n"
+            f"🖼️ *图片生成提示词:*\n`{img_prompt}`",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ 生成失败: {e}")
+
+
+# ─────────────────────────────────────────────
+#  /douyin — Douyin video script (DeepSeek)
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_douyin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = context.args or []
+    # Check if last arg is a duration like "15秒" or "60秒"
+    duration = "30秒"
+    if args and args[-1].endswith("秒"):
+        duration = args.pop()
+    topic = " ".join(args) if args else "燕窝养殖投资值不值得"
+    await update.message.reply_text(f"🎬 生成抖音脚本 ({duration})：_{topic}_...", parse_mode="Markdown")
+    try:
+        script = generate_douyin_script(topic, duration)
+        draft_state[chat_id] = {
+            "draft": script,
+            "image_path": None,
+            "history": [
+                {"role": "user", "content": f"抖音脚本话题：{topic}，时长：{duration}"},
+                {"role": "assistant", "content": script},
+            ],
+        }
+        await update.message.reply_text(
+            f"{script}\n\n———\n"
+            "回复反馈修改，/cancel 放弃。\n"
+            "_(抖音脚本仅供参考，无法直接发布)_",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ 生成失败: {e}")
+
+
+# ─────────────────────────────────────────────
+#  /wechat — WeChat post (DeepSeek)
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_wechat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    args = context.args or []
+    # format: /wechat [article|moments] topic...
+    fmt = "moments"
+    if args and args[0] in ("article", "moments"):
+        fmt = args.pop(0)
+    topic = " ".join(args) if args else "沙巴燕屋养殖的独特优势"
+    label = "公众号文章" if fmt == "article" else "朋友圈"
+    await update.message.reply_text(f"💬 生成微信{label}：_{topic}_...", parse_mode="Markdown")
+    try:
+        post = generate_wechat_post(topic, fmt)
+        draft_state[chat_id] = {
+            "draft": post,
+            "image_path": None,
+            "history": [
+                {"role": "user", "content": f"微信{label}话题：{topic}"},
+                {"role": "assistant", "content": post},
+            ],
+        }
+        await update.message.reply_text(
+            f"{post}\n\n———\n"
+            "回复反馈修改，/cancel 放弃。",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ 生成失败: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -476,6 +580,9 @@ def main() -> None:
     app.add_handler(CommandHandler("status",   cmd_status))
     app.add_handler(CommandHandler("bank",     cmd_bank))
     app.add_handler(CommandHandler("research", cmd_research))
+    app.add_handler(CommandHandler("xhs",      cmd_xhs))
+    app.add_handler(CommandHandler("douyin",   cmd_douyin))
+    app.add_handler(CommandHandler("wechat",   cmd_wechat))
 
     # Media handlers (Tier 3)
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
