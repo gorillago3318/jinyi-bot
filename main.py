@@ -32,10 +32,12 @@ from content import (
     generate_wechat_post,
     generate_blog_article,
     generate_copypaste_blocks,
+    generate_linkedin_post,
 )
 from publisher import publish_all
 from scheduler import build_scheduler, load_dyk_bank, count_unused_dyk
 from researcher import research_trending_content, research_with_kimi_search
+from imager import generate_image, generate_post_images
 # from kling import submit_text_to_video, poll_video_result, download_video  # disabled — no video platform
 
 # ── Logging ──────────────────────────────────
@@ -56,6 +58,7 @@ draft_state: dict[int, dict] = {}
 # ── Telegram command menu ────────────────────
 BOT_COMMANDS = [
     BotCommand("draft",    "Bilingual post · /draft [investor|consumer] [topic]"),
+    BotCommand("linkedin", "LinkedIn thought leadership post · /linkedin [topic]"),
     BotCommand("xhs",      "Xiaohongshu post · /xhs [investor|consumer] [topic]"),
     BotCommand("douyin",   "Douyin script · /douyin [investor|consumer] [topic]"),
     BotCommand("wechat",   "WeChat post · /wechat [investor|consumer] [moments|article] [topic]"),
@@ -97,6 +100,66 @@ TIER2_CONSUMER_TOPICS = [
 
 # Video generation disabled — no platform available yet.
 # Re-enable when a working video API is available.
+
+
+async def _generate_images_background(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    img_prompt: str,
+    topic: str,
+) -> None:
+    """
+    Generate post images via Imagen 3 in background.
+    Sends all format variants to owner as a media group.
+    Saves square image path to draft_state for blog upload.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        paths = await loop.run_in_executor(None, generate_post_images, img_prompt)
+
+        if not paths:
+            await context.bot.send_message(chat_id, "⚠️ Image generation returned no results.")
+            return
+
+        # Save square image to draft_state for /approve blog upload
+        if chat_id in draft_state and "square" in paths:
+            draft_state[chat_id]["image_path"] = paths["square"]
+
+        # Send images as labelled messages
+        labels = {
+            "square":   "🟫 Square — Blog / general",
+            "portrait": "📕 3:4 — XHS copy-paste",
+            "facebook": "📘 4:5 — Facebook feed",
+            "linkedin": "💼 16:9 — LinkedIn",
+        }
+        await context.bot.send_message(
+            chat_id,
+            "🖼 *Images ready!* Copy to your platforms:\n\n"
+            "• Square → Blog (auto-attached on /approve)\n"
+            "• 3:4 → XHS\n"
+            "• 4:5 → Facebook\n"
+            "• 16:9 → LinkedIn",
+            parse_mode="Markdown",
+        )
+        for fmt, path in paths.items():
+            if Path(path).exists():
+                with open(path, "rb") as f:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=labels.get(fmt, fmt),
+                    )
+                # Clean up non-square images (square kept for /approve)
+                if fmt != "square":
+                    Path(path).unlink(missing_ok=True)
+
+    except Exception as e:
+        logger.warning(f"Image generation failed (non-fatal): {e}")
+        await context.bot.send_message(
+            chat_id,
+            f"⚠️ Image generation failed: {e}\n_Use the image prompt above in Canva / Firefly manually._",
+            parse_mode="Markdown",
+        )
 
 
 async def _generate_blog_background(
@@ -369,16 +432,11 @@ async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             f"{draft}\n\n———\n"
             "Reply with feedback to revise · /approve to publish · /cancel to discard\n\n"
-            "_📝 Generating blog article in background — wait for confirmation before /approve_",
-            parse_mode="Markdown",
-        )
-        # Send image prompt as separate message so it's easy to copy
-        await update.message.reply_text(
-            "🖼 *Image Prompt* — paste into Canva AI / Adobe Firefly / ideogram.ai:\n\n"
-            f"{img_prompt}",
+            "_📝 Blog article + 🖼 Images generating in background — wait for both before /approve_",
             parse_mode="Markdown",
         )
         asyncio.create_task(_generate_blog_background(context, chat_id, brief, track))
+        asyncio.create_task(_generate_images_background(context, chat_id, img_prompt, brief))
     except Exception as e:
         err = str(e)
         if "402" in err or "Insufficient Balance" in err:
@@ -647,6 +705,53 @@ async def cmd_wechat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
         else:
             await update.message.reply_text(f"Failed: {e}")
+
+
+# ─────────────────────────────────────────────
+#  /linkedin
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_linkedin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import random
+    chat_id = update.effective_chat.id
+    args = list(context.args or [])
+
+    track = "investor"
+    if args and args[0].lower() in ("investor", "consumer", "inv", "con", "i", "c"):
+        track = args.pop(0).lower()
+
+    topic = " ".join(args) if args else random.choice(TIER2_INVESTOR_TOPICS)
+
+    await update.message.reply_text(
+        f"Writing LinkedIn post: _{topic}_...", parse_mode="Markdown"
+    )
+
+    try:
+        post = generate_linkedin_post(topic, track=track)
+        img_prompt = generate_image_prompt(post)
+        draft_state[chat_id] = {
+            "draft": post,
+            "title": topic,
+            "track": track,
+            "image_path": None,
+            "video_url": None,
+            "blog_article": None,
+            "history": [
+                {"role": "user", "content": f"LinkedIn post: {topic}"},
+                {"role": "assistant", "content": post},
+            ],
+        }
+        await update.message.reply_text(
+            f"{post}\n\n———\n"
+            "Copy and post to LinkedIn manually.\n"
+            "Reply with feedback to revise · /cancel to discard\n\n"
+            "_🖼 Generating LinkedIn image in background..._",
+            parse_mode="Markdown",
+        )
+        asyncio.create_task(_generate_images_background(context, chat_id, img_prompt, topic))
+    except Exception as e:
+        await update.message.reply_text(f"Failed: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -974,8 +1079,9 @@ def main() -> None:
     app.add_handler(CommandHandler("xhs",      cmd_xhs))
     app.add_handler(CommandHandler("douyin",   cmd_douyin))
     app.add_handler(CommandHandler("video",    cmd_video))
-    app.add_handler(CommandHandler("wechat",   cmd_wechat))
-    app.add_handler(CommandHandler("research", cmd_research))
+    app.add_handler(CommandHandler("wechat",    cmd_wechat))
+    app.add_handler(CommandHandler("linkedin",  cmd_linkedin))
+    app.add_handler(CommandHandler("research",  cmd_research))
     app.add_handler(CommandHandler("approve",  cmd_approve))
     app.add_handler(CommandHandler("image",    cmd_image, filters=filters.PHOTO))
     app.add_handler(CommandHandler("cancel",   cmd_cancel))

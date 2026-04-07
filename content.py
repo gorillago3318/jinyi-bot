@@ -279,6 +279,33 @@ def generate_blog_article(topic: str, track: str = "investor") -> str:
     )
 
 
+def generate_linkedin_post(topic: str, track: str = "investor") -> str:
+    """
+    Generate a LinkedIn post — professional thought leadership tone.
+    English only. 150–200 words. No hashtag spam (max 3).
+    """
+    system = """You are writing LinkedIn posts for Mak Wai Kit, CEO of JinYi Group —
+a regulated swiftlet farming asset manager in Sabah and Sarawak, Malaysian Borneo.
+20+ years operations, 36+ locations, RM2.99M raised via equity crowdfunding.
+
+LinkedIn tone rules:
+- First-person ("I've observed...", "We recently...")
+- Thought leadership — share a genuine insight, not a sales pitch
+- Data point or counter-intuitive observation to open
+- 150–200 words maximum
+- Short paragraphs, one idea per paragraph
+- End with a genuine question to spark discussion
+- Max 3 hashtags, professional ones only (#AlternativeAssets #SwiftletFarming #Investing)
+- Never sound like an ad
+- Authoritative but human — the voice of an experienced founder/operator
+"""
+    return _claude(
+        system,
+        [{"role": "user", "content": f"Write a LinkedIn post about: {topic}"}],
+        max_tokens=600,
+    )
+
+
 def generate_copypaste_blocks(topic: str, track: str = "investor") -> str:
     """
     Generate ready-to-copy XHS post + Douyin script for manual posting.
