@@ -36,7 +36,7 @@ from content import (
 from publisher import publish_all
 from scheduler import build_scheduler, load_dyk_bank, count_unused_dyk
 from researcher import research_trending_content, research_with_kimi_search
-from kling import submit_text_to_video, poll_video_result, download_video
+# from kling import submit_text_to_video, poll_video_result, download_video  # disabled — no video platform
 
 # ── Logging ──────────────────────────────────
 logging.basicConfig(
@@ -57,8 +57,7 @@ draft_state: dict[int, dict] = {}
 BOT_COMMANDS = [
     BotCommand("draft",    "Bilingual post · /draft [investor|consumer] [topic]"),
     BotCommand("xhs",      "Xiaohongshu post · /xhs [investor|consumer] [topic]"),
-    BotCommand("douyin",   "Douyin script + video · /douyin [investor|consumer] [topic]"),
-    BotCommand("video",    "Generate a Kling video from a visual prompt"),
+    BotCommand("douyin",   "Douyin script · /douyin [investor|consumer] [topic]"),
     BotCommand("wechat",   "WeChat post · /wechat [investor|consumer] [moments|article] [topic]"),
     BotCommand("research", "Research trending Xiaohongshu & Douyin topics"),
     BotCommand("approve",  "Publish current draft to all channels"),
@@ -96,55 +95,8 @@ TIER2_CONSUMER_TOPICS = [
 ]
 
 
-async def _send_kling_video(context: ContextTypes.DEFAULT_TYPE, chat_id: int, img_prompt: str, caption: str) -> None:
-    """
-    Generate a Kling video from an image prompt and send it to the owner.
-    Saves the CDN video URL back to draft_state so /approve can attach it to the blog post.
-    Failure is non-fatal.
-    """
-    try:
-        visual_prompt = (
-            f"{img_prompt} "
-            "Cinematic vertical 9:16, premium brand aesthetic, Malaysian Borneo, "
-            "photorealistic, no text overlay, no people."
-        )
-        loop = asyncio.get_event_loop()
-        task_id = await loop.run_in_executor(
-            None,
-            lambda: submit_text_to_video(
-                prompt=visual_prompt,
-                duration=5,
-                aspect_ratio="9:16",
-                model="kling-v1-6",
-                mode="std",
-            ),
-        )
-        video_url = await loop.run_in_executor(None, poll_video_result, task_id)
-
-        # Save CDN URL to draft state so /approve can send it to the blog
-        if chat_id in draft_state:
-            draft_state[chat_id]["video_url"] = video_url
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            tmp_path = tmp.name
-        await loop.run_in_executor(None, download_video, video_url, tmp_path)
-
-        with open(tmp_path, "rb") as vf:
-            await context.bot.send_video(
-                chat_id=chat_id,
-                video=vf,
-                caption=f"🎬 *Kling visual ready*\n_{caption}_\n\nVideo will be included when you /approve.",
-                parse_mode="Markdown",
-            )
-        Path(tmp_path).unlink(missing_ok=True)
-
-    except Exception as e:
-        logger.warning(f"Kling auto-visual failed (non-fatal): {e}")
-        await context.bot.send_message(
-            chat_id,
-            f"⚠️ Kling video generation failed: {e}\n_Content draft is still ready above._",
-            parse_mode="Markdown",
-        )
+# Video generation disabled — no platform available yet.
+# Re-enable when a working video API is available.
 
 
 async def _generate_blog_background(
@@ -400,11 +352,9 @@ async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"{draft}\n\n———\n"
             "Reply with feedback to revise · /approve to publish · /cancel to discard\n\n"
             f"🖼 *Image prompt:*\n`{img_prompt}`\n\n"
-            "_🎬 Generating Kling video + 📝 blog article in background..._",
+            "_📝 Generating blog article in background..._",
             parse_mode="Markdown",
         )
-        # Fire background tasks (non-blocking)
-        asyncio.create_task(_send_kling_video(context, chat_id, img_prompt, brief))
         asyncio.create_task(_generate_blog_background(context, chat_id, brief, track))
     except Exception as e:
         err = str(e)
@@ -459,11 +409,9 @@ async def cmd_xhs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             f"{post}\n\n———\n"
             "Reply with feedback · /approve · /cancel\n\n"
-            f"🖼 *Image prompt:*\n`{img_prompt}`\n\n"
-            "_🎬 Generating Kling visual in background..._",
+            f"🖼 *Image prompt:*\n`{img_prompt}`",
             parse_mode="Markdown",
         )
-        asyncio.create_task(_send_kling_video(context, chat_id, img_prompt, topic))
     except Exception as e:
         err = str(e)
         if "402" in err or "Insufficient Balance" in err:
