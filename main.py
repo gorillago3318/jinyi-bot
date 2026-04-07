@@ -363,13 +363,10 @@ async def cmd_research(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if context.args:
             query = " ".join(context.args)
             result = research_with_kimi_search(query)
-            await update.message.reply_text(
-                f"🔍 *Research: {query}*\n\n{result}",
-                parse_mode="Markdown",
-            )
+            await update.message.reply_text(f"🔍 Research: {query}\n\n{result}")
         else:
             report = research_trending_content(num_ideas=5)
-            await update.message.reply_text(report, parse_mode="Markdown")
+            await update.message.reply_text(report)
     except Exception as e:
         await update.message.reply_text(f"Research failed: {e}")
 
