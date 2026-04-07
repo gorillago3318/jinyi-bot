@@ -6,6 +6,7 @@ WordPress blog publishing is handled separately as a future step.
 
 import os
 import logging
+import re
 import requests
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 FB_PAGE_ID = os.getenv("FB_PAGE_ID")
 FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")
 IG_ACCOUNT_ID = os.getenv("IG_ACCOUNT_ID")
+WEBSITE_URL = os.getenv("WEBSITE_URL", "").rstrip("/")
+BLOG_API_SECRET = os.getenv("BLOG_API_SECRET", "")
 
 
 # ─────────────────────────────────────────────
@@ -128,18 +131,92 @@ def publish_to_instagram(text: str, image_url: str) -> bool:
 
 
 # ─────────────────────────────────────────────
+#  Website / Blog (Supabase via Next.js API)
+# ─────────────────────────────────────────────
+
+def _slugify(text: str) -> str:
+    """Convert a title/brief into a URL-safe slug."""
+    slug = text.lower().strip()
+    slug = re.sub(r"[^\w\s-]", "", slug)
+    slug = re.sub(r"[\s_-]+", "-", slug)
+    slug = slug[:80].strip("-")
+    return slug or "post"
+
+
+def _split_bilingual(text: str) -> tuple[str, str]:
+    """
+    Split a bilingual post into (en, zh) parts.
+    Posts are structured as: [EN content] \\n\\n——— \\n\\n[ZH content]
+    """
+    parts = re.split(r"\n\s*———\s*\n", text, maxsplit=1)
+    en = parts[0].strip() if parts else text.strip()
+    zh = parts[1].strip() if len(parts) > 1 else ""
+    return en, zh
+
+
+def publish_to_website(
+    title: str,
+    text: str,
+    track: str = "investor",
+    video_url: str | None = None,
+    image_url: str | None = None,
+) -> bool:
+    """Publish a post to the website blog via the Next.js API route."""
+    if not WEBSITE_URL or not BLOG_API_SECRET:
+        logger.warning("WEBSITE_URL or BLOG_API_SECRET not set — skipping website publish")
+        return False
+
+    content_en, content_zh = _split_bilingual(text)
+
+    # Extract hashtags from EN section
+    hashtag_match = re.findall(r"#\w+", content_en)
+    hashtags = " ".join(hashtag_match) if hashtag_match else None
+
+    slug = _slugify(title)
+
+    payload = {
+        "secret": BLOG_API_SECRET,
+        "slug": slug,
+        "title": title,
+        "content_en": content_en,
+        "content_zh": content_zh or None,
+        "track": track,
+        "hashtags": hashtags,
+        "video_url": video_url,
+        "image_url": image_url,
+    }
+
+    try:
+        resp = requests.post(
+            f"{WEBSITE_URL}/api/posts",
+            json=payload,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        logger.info(f"Website publish OK: {data.get('slug')}")
+        return True
+    except Exception as e:
+        logger.error(f"Website publish FAILED: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────
 #  Convenience: publish to all platforms
 # ─────────────────────────────────────────────
 
 def publish_all(
     text: str,
+    title: str = "JinYi Update",
+    track: str = "investor",
     telegram_channel: str | None = None,
     image_path: str | None = None,
     instagram_image_url: str | None = None,
+    video_url: str | None = None,
 ) -> dict:
     """
     Publish to all configured platforms.
-    Returns a dict of results: { "telegram": bool, "facebook": bool, "instagram": bool }
+    Returns a dict of results: { "telegram": bool, "facebook": bool, "website": bool }
     """
     results = {}
 
@@ -148,9 +225,15 @@ def publish_all(
 
     results["facebook"] = publish_to_facebook(text, image_path)
 
+    results["website"] = publish_to_website(
+        title=title,
+        text=text,
+        track=track,
+        video_url=video_url,
+        image_url=None,  # image_path is local — pass hosted URL if available
+    )
+
     if instagram_image_url:
         results["instagram"] = publish_to_instagram(text, instagram_image_url)
-    else:
-        results["instagram"] = False  # IG requires an image
 
     return results

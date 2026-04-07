@@ -97,7 +97,8 @@ TIER2_CONSUMER_TOPICS = [
 async def _send_kling_video(context: ContextTypes.DEFAULT_TYPE, chat_id: int, img_prompt: str, caption: str) -> None:
     """
     Generate a Kling video from an image prompt and send it to the owner.
-    Runs after content is posted — failure is non-fatal (just logs).
+    Saves the CDN video URL back to draft_state so /approve can attach it to the blog post.
+    Failure is non-fatal.
     """
     try:
         visual_prompt = (
@@ -118,6 +119,10 @@ async def _send_kling_video(context: ContextTypes.DEFAULT_TYPE, chat_id: int, im
         )
         video_url = await loop.run_in_executor(None, poll_video_result, task_id)
 
+        # Save CDN URL to draft state so /approve can send it to the blog
+        if chat_id in draft_state:
+            draft_state[chat_id]["video_url"] = video_url
+
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp_path = tmp.name
         await loop.run_in_executor(None, download_video, video_url, tmp_path)
@@ -126,7 +131,7 @@ async def _send_kling_video(context: ContextTypes.DEFAULT_TYPE, chat_id: int, im
             await context.bot.send_video(
                 chat_id=chat_id,
                 video=vf,
-                caption=f"🎬 *Kling visual*\n{caption}",
+                caption=f"🎬 *Kling visual ready*\n_{caption}_\n\nVideo will be included when you /approve.",
                 parse_mode="Markdown",
             )
         Path(tmp_path).unlink(missing_ok=True)
@@ -286,8 +291,11 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("Publishing...")
         results = publish_all(
             text=state["draft"],
+            title=state.get("title", "JinYi Update"),
+            track=state.get("track", "investor"),
             telegram_channel=TELEGRAM_CHANNEL or None,
             image_path=state.get("image_path"),
+            video_url=state.get("video_url"),
         )
         lines = [("✅" if ok else "❌") + f" {p.capitalize()}" for p, ok in results.items()]
         await context.bot.send_message(chat_id, "Published:\n" + "\n".join(lines))
@@ -356,8 +364,10 @@ async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         img_prompt = generate_image_prompt(draft)
         draft_state[chat_id] = {
             "draft": draft,
+            "title": brief,
             "track": track,
             "image_path": None,
+            "video_url": None,
             "history": [
                 {"role": "user", "content": f"Write a {track_label} post about: {brief}"},
                 {"role": "assistant", "content": draft},
@@ -413,8 +423,10 @@ async def cmd_xhs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         img_prompt = generate_image_prompt(post)
         draft_state[chat_id] = {
             "draft": post,
+            "title": topic,
             "track": track,
             "image_path": None,
+            "video_url": None,
             "history": [
                 {"role": "user", "content": f"Xiaohongshu {track_label} topic: {topic}"},
                 {"role": "assistant", "content": post},
@@ -535,8 +547,10 @@ async def cmd_douyin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     draft_state[chat_id] = {
         "draft": script,
+        "title": topic,
         "track": track,
         "image_path": None,
+        "video_url": None,
         "history": [
             {"role": "user", "content": f"Douyin {track_label} script: {topic}"},
             {"role": "assistant", "content": script},
@@ -616,8 +630,10 @@ async def cmd_wechat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         post = generate_wechat_post(topic, fmt, track=track)
         draft_state[chat_id] = {
             "draft": post,
+            "title": topic,
             "track": track,
             "image_path": None,
+            "video_url": None,
             "history": [
                 {"role": "user", "content": f"WeChat {track_label} {fmt_label}: {topic}"},
                 {"role": "assistant", "content": post},
@@ -674,8 +690,11 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     results = publish_all(
         text=state["draft"],
+        title=state.get("title", "JinYi Update"),
+        track=state.get("track", "investor"),
         telegram_channel=TELEGRAM_CHANNEL or None,
         image_path=state.get("image_path"),
+        video_url=state.get("video_url"),
     )
 
     lines = [("✅" if ok else "❌") + f" {p.capitalize()}" for p, ok in results.items()]
