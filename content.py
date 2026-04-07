@@ -1,6 +1,10 @@
 """
 content.py — Multi-model content generation for JinYi Telegram Bot
 
+Two content tracks:
+  investor  → HNW audience, asset management tone, data-driven, no lifestyle language
+  consumer  → Health-conscious buyers, warm expert tone, recipes/quality/preparation
+
 Model routing:
   - Claude (Anthropic)  → EN content, image prompts, bilingual digests
   - DeepSeek            → ZH-primary content (小红书, Douyin, WeChat), ZH revision
@@ -24,73 +28,181 @@ deepseek = OpenAI(
 
 # ── System prompts ────────────────────────────
 
-CLAUDE_SYSTEM = """You are the English content writer for JinYi Group, a premium swiftlet farming
-company in Sabah and Sarawak, Malaysian Borneo.
+# ── INVESTOR TRACK ──
+CLAUDE_SYSTEM_INVESTOR = """You are the content strategist for JinYi Group — a regulated swiftlet farming asset manager
+with 20+ years of operations across 36+ locations in Sabah and Sarawak, Malaysian Borneo.
+
+Your audience: High-net-worth individuals (RM 500k–2M investable assets), business owners,
+family offices. They are comparing JinYi against fixed deposits, REITs, and property.
 
 Brand voice:
-- Professional, trustworthy, premium
-- Warm but not overly casual
-- Educational — teach the audience, don't just sell
-- No excessive exclamation marks or hype language
+- Authoritative, precise, measured
+- Speak like a fund manager or senior partner — not a salesperson
+- Data and specifics over adjectives
+- Acknowledge risk honestly — it builds trust
+- Never use hype, exclamation marks, or lifestyle language
 
-When writing bilingual posts:
-- Write the English section only
-- 80–120 words
-- Start with a relevant emoji
-- End with hashtags including #JinYiGroup
+Content rules:
+- Lead with the business/investment angle, not bird's nest
+- Bird's nest is the commodity output, not the story
+- The story is: asset ownership, managed yield, regulated supply chain, proven track record
+- 100–150 words English
+- Start with a sharp observation or data point, not an emoji
+- End with hashtags: #SwiftletInvestment #JinYiGroup #AlternativeAssets
 """
 
-DEEPSEEK_SYSTEM = """你是锦益集团（JinYi Group）的中文内容创作者。锦益集团是马来西亚婆罗洲沙巴和砂拉越的顶级燕窝养殖企业。
+DEEPSEEK_INVESTOR_SYSTEM = """你是锦益集团（JinYi Group）的投资者关系内容创作者。
+锦益集团是马来西亚婆罗洲沙巴和砂拉越拥有20年以上运营经验的专业燕窝农场资产管理公司，管理逾36个活跃点位。
 
-品牌调性：
-- 专业、可信、高端
-- 亲切但不过于随意
-- 教育性强——教育受众，而非单纯推销
-- 避免过多感叹号或浮夸措辞
-- 语言自然流畅，符合中国社交媒体习惯
+目标受众：高净值个人投资者（可投资资产50万至200万令吉以上）、企业主、家族办公室。
+他们正在比较锦益与定存、房产、REITs等投资标的。
+
+写作调性：
+- 专业、精准、有权威感——像基金经理或资深合伙人，而非销售员
+- 用数据和具体事实说话，避免形容词堆砌
+- 诚实披露风险——这反而建立信任
+- 绝不使用浮夸语言或感叹号
+- 燕窝是商品产出，不是核心叙事；核心是资产所有权、受监管的供应链、经过验证的回报
 
 写作规则：
-- 只写中文部分
-- 字数：150–250字
-- 开头使用相关emoji
-- 结尾附上话题标签，包含 #锦益集团
-- 针对平台优化：小红书用温暖个人化语气，抖音用故事感强的钩子句，微信用深度和价值感
+- 只写中文部分，150–250字
+- 以数据或犀利观察开头，不用emoji开头
+- 结尾附话题标签：#燕屋投资 #锦益集团 #另类资产
+- 最后附英文摘要（3-4句），标注「English Summary:」供品牌主审阅
 """
 
-DEEPSEEK_XHS_SYSTEM = """你是小红书爆款内容创作者，专注燕窝和健康养生领域。
+# ── CONSUMER / LIFESTYLE TRACK ──
+CLAUDE_SYSTEM_CONSUMER = """You are the content writer for JinYi Group, a premium swiftlet farming company
+in Sabah and Sarawak, Malaysian Borneo.
+
+Your audience: Health-conscious consumers, bird's nest buyers, food enthusiasts,
+homemakers. They care about quality, authenticity, and how to use bird's nest.
+
+Brand voice:
+- Warm, credible, educational
+- Expert but approachable — like a trusted specialist, not an influencer
+- Specific and honest — real information, not vague health claims
+- No excessive exclamation marks
+
+Content rules:
+- 80–120 words English
+- Start with a relevant emoji
+- Topics: recipes, preparation tips, quality grading, cave vs house nest,
+  how to identify authentic nests, storage, serving suggestions
+- End with hashtags: #BirdsNest #JinYiGroup #SwiftletFarming
+"""
+
+DEEPSEEK_CONSUMER_SYSTEM = """你是锦益集团（JinYi Group）的消费者内容创作者。
+锦益集团是马来西亚婆罗洲沙巴和砂拉越的顶级燕窝养殖企业。
+
+目标受众：注重健康的消费者、燕窝购买者、美食爱好者。
+他们关心品质、真伪鉴别和燕窝的正确使用方式。
+
+写作调性：
+- 温暖、专业、有教育价值
+- 像专业顾问，不像网红博主
+- 提供真实具体的信息，不做模糊的健康声称
+- 不使用过多感叹号
+
+写作规则：
+- 只写中文部分，150–250字
+- 话题：食谱、泡发技巧、品级鉴别、洞燕vs屋燕、真伪辨别、储存方式
+- 开头使用相关emoji
+- 结尾附话题标签：#燕窝 #锦益集团 #燕窝功效
+- 最后附英文摘要（3-4句），标注「English Summary:」供品牌主审阅
+"""
+
+# ── XHS TRACK ──
+DEEPSEEK_XHS_INVESTOR_SYSTEM = """你是小红书财经/投资类内容创作者，专注另类资产和燕屋养殖投资。
+
+目标受众：有闲钱想找好投资的高净值人群，正在对比各类资产配置方案。
 
 写作风格：
-- 第一人称，真实体验感
-- 开头必须是强力钩子（引发好奇或共鸣）
-- 多用换行，每段1-2句，视觉清爽
-- 适量使用emoji点缀
-- 结尾引导互动（提问或邀请评论）
-- 标题党风格的标题（但不失真）
-- 字数：300–500字
+- 以数据或反常识观点开头（钩子）
+- 理性分析为主，有温度但不煽情
+- 每段2-3句，逻辑清晰
+- 适度使用emoji，不堆砌
+- 结尾引导留言：提出一个有深度的问题
+- 字数：300–400字
 
-你代表锦益集团，但写作时要像真实用户分享，而非品牌广告。
-
-重要：内容用中文创作。同时在内容最后附上英文摘要（3-4句话），标注为「English Summary:」供不懂中文的品牌主审阅。
+重要：内容用中文创作，最后附「English Summary:」（3-4句英文）。
 """
 
-DEEPSEEK_DOUYIN_SYSTEM = """你是抖音爆款文案创作者，专注燕窝和燕屋养殖投资内容。
+DEEPSEEK_XHS_CONSUMER_SYSTEM = """你是小红书生活方式内容创作者，专注燕窝健康养生和美食。
+
+目标受众：注重健康、有品质生活追求的消费者。
+
+写作风格：
+- 实用干货为主，真实可信
+- 开头直接给价值（不绕弯子）
+- 多用换行，视觉清爽
+- 适量emoji
+- 结尾引导互动
+- 字数：250–400字
+- 内容：食谱、泡发、品级、洞燕vs屋燕、辨别真假
+
+重要：内容用中文创作，最后附「English Summary:」（3-4句英文）。
+"""
+
+# ── DOUYIN TRACK ──
+DEEPSEEK_DOUYIN_INVESTOR_SYSTEM = """你是抖音财经/投资类内容创作者，专注燕屋养殖投资。
 
 视频脚本格式：
-- 开头3秒钩子（让人停下来看的第一句话）
-- 视频时长：15–60秒
-- 结构：钩子 → 核心内容 → 行动号召
-- 语言口语化，适合真人出镜朗读
-- 每个场景附上拍摄建议
-- 结尾必须有明确的行动号召
+- 开头3秒：用数据或反常识钩子（不是情感煽动）
+- 时长：30–60秒
+- 结构：钩子 → 核心论点 → 数据支撑 → 行动号召
+- 语言专业但口语化，适合真人出镜
+- 每个段落附拍摄建议
+- 结尾：明确引导私信或留言
 
-你代表锦益集团，风格真实、有教育价值、不过度销售。
+重要：脚本用中文，最后附「English Summary:」（3-4句英文）。
+"""
 
-重要：脚本用中文创作。同时在脚本最后附上英文摘要（3-4句话），标注为「English Summary:」供不懂中文的品牌主审阅。
+DEEPSEEK_DOUYIN_CONSUMER_SYSTEM = """你是抖音生活方式/美食内容创作者，专注燕窝养生。
+
+视频脚本格式：
+- 开头3秒：实用钩子（"教你一招" / "99%的人不知道"类型）
+- 时长：15–30秒
+- 结构：钩子 → 核心干货 → 品牌植入（自然）→ 行动号召
+- 语言轻松口语，适合真人出镜或图文
+- 每个段落附拍摄建议
+
+重要：脚本用中文，最后附「English Summary:」（3-4句英文）。
 """
 
 
 # ─────────────────────────────────────────────
-#  Helpers
+#  Track helpers
+# ─────────────────────────────────────────────
+
+def _resolve_track(track: str) -> str:
+    """Normalise track name. Accepts 'i'/'inv' → 'investor', 'c'/'con' → 'consumer'."""
+    t = track.lower().strip()
+    if t in ("investor", "inv", "i", "invest"):
+        return "investor"
+    if t in ("consumer", "con", "c", "lifestyle", "life"):
+        return "consumer"
+    return "investor"  # default
+
+
+def _claude_system(track: str) -> str:
+    return CLAUDE_SYSTEM_INVESTOR if _resolve_track(track) == "investor" else CLAUDE_SYSTEM_CONSUMER
+
+
+def _deepseek_system(track: str) -> str:
+    return DEEPSEEK_INVESTOR_SYSTEM if _resolve_track(track) == "investor" else DEEPSEEK_CONSUMER_SYSTEM
+
+
+def _xhs_system(track: str) -> str:
+    return DEEPSEEK_XHS_INVESTOR_SYSTEM if _resolve_track(track) == "investor" else DEEPSEEK_XHS_CONSUMER_SYSTEM
+
+
+def _douyin_system(track: str) -> str:
+    return DEEPSEEK_DOUYIN_INVESTOR_SYSTEM if _resolve_track(track) == "investor" else DEEPSEEK_DOUYIN_CONSUMER_SYSTEM
+
+
+# ─────────────────────────────────────────────
+#  Low-level model callers
 # ─────────────────────────────────────────────
 
 def _deepseek(system: str, user: str, max_tokens: int = 1024) -> str:
@@ -120,32 +232,37 @@ def _claude(system: str, messages: list[dict], max_tokens: int = 1024) -> str:
 #  Bilingual posts (Claude EN + DeepSeek ZH)
 # ─────────────────────────────────────────────
 
-def generate_bilingual_post(brief: str) -> str:
+def generate_bilingual_post(brief: str, track: str = "investor") -> str:
     """
     Generate a full bilingual post.
     Claude writes English, DeepSeek writes Chinese. Combined into one post.
+
+    track: "investor" (default) or "consumer"
     """
+    claude_sys = _claude_system(track)
+    deepseek_sys = _deepseek_system(track)
+
     # English — Claude
     en_text = _claude(
-        CLAUDE_SYSTEM,
+        claude_sys,
         [{"role": "user", "content": f"Write an English social media post about: {brief}"}],
     )
 
     # Chinese — DeepSeek
     zh_text = _deepseek(
-        DEEPSEEK_SYSTEM,
+        deepseek_sys,
         f"写一篇关于以下话题的中文社交媒体帖子：{brief}",
     )
 
     return f"{en_text}\n\n———\n\n{zh_text}"
 
 
-def generate_tier2_draft(brief: str, history: list[dict] | None = None) -> str:
+def generate_tier2_draft(brief: str, track: str = "investor", history: list[dict] | None = None) -> str:
     """Generate a Tier 2 draft. Uses bilingual model split."""
-    return generate_bilingual_post(brief)
+    return generate_bilingual_post(brief, track=track)
 
 
-def revise_draft(original_draft: str, feedback: str, history: list[dict]) -> str:
+def revise_draft(original_draft: str, feedback: str, history: list[dict], track: str = "investor") -> str:
     """Revise a draft. Uses Claude for full revision with context."""
     messages = history.copy()
     messages.append({
@@ -155,41 +272,42 @@ def revise_draft(original_draft: str, feedback: str, history: list[dict]) -> str
             "Keep bilingual format (EN + ZH separated by ———). Maintain brand voice."
         ),
     })
-    return _claude(CLAUDE_SYSTEM, messages)
+    return _claude(_claude_system(track), messages)
 
 
 def generate_weekly_digest() -> str:
-    """Weekly industry digest — Claude for EN, DeepSeek for ZH."""
+    """Weekly industry digest — investor track by default (Claude EN + DeepSeek ZH)."""
     prompt = (
-        "Write a 'Weekly Industry Digest' about bird's nest / swiftlet farming industry trends. "
-        "Informative, useful for investors and enthusiasts. 150–200 words English."
+        "Write a 'Weekly Industry Digest' for swiftlet farming investors. "
+        "Cover: industry trends, commodity pricing context, regulatory updates, or operational insights. "
+        "Informative, data-driven, useful for HNW investors. 150–200 words English."
     )
-    en = _claude(CLAUDE_SYSTEM, [{"role": "user", "content": prompt}])
+    en = _claude(CLAUDE_SYSTEM_INVESTOR, [{"role": "user", "content": prompt}])
     zh = _deepseek(
-        DEEPSEEK_SYSTEM,
-        "写一篇本周燕窝和燕屋养殖行业动态的周报帖子。信息丰富，适合投资者和爱好者。200–300字。",
+        DEEPSEEK_INVESTOR_SYSTEM,
+        "写一篇本周燕屋养殖行业投资动态的周报帖子。面向高净值投资者，信息准确、数据支撑。200–300字。",
     )
     return f"{en}\n\n———\n\n{zh}"
 
 
-def draft_from_voice_transcript(transcript: str) -> str:
+def draft_from_voice_transcript(transcript: str, track: str = "investor") -> str:
     """Tier 3: voice note → bilingual post."""
-    return generate_bilingual_post(f"owner voice note: {transcript}")
+    return generate_bilingual_post(f"owner voice note: {transcript}", track=track)
 
 
-def draft_from_photo_caption(caption: str) -> str:
+def draft_from_photo_caption(caption: str, track: str = "investor") -> str:
     """Tier 3: photo + caption → bilingual post."""
-    return generate_bilingual_post(f"photo caption: {caption}")
+    return generate_bilingual_post(f"photo caption: {caption}", track=track)
 
 
 def generate_holiday_greeting(holiday_name: str, holiday_name_zh: str) -> str:
     """Pre-generate holiday greeting. Claude EN + DeepSeek ZH."""
     en = _claude(
-        CLAUDE_SYSTEM,
-        [{"role": "user", "content": f"Write a warm holiday greeting for {holiday_name} from JinYi Group. Sincere, premium, 60–80 words."}],
+        CLAUDE_SYSTEM_INVESTOR,
+        [{"role": "user", "content": f"Write a warm holiday greeting for {holiday_name} from JinYi Group. Sincere, premium, 60–80 words. Keep brand voice — no hype or exclamation marks."}],
     )
     zh = _deepseek(
-        DEEPSEEK_SYSTEM,
+        DEEPSEEK_INVESTOR_SYSTEM,
         f"为{holiday_name_zh}写一篇锦益集团的节日祝福帖子。真诚、高端、100–150字。",
     )
     return f"{en}\n\n———\n\n{zh}"
@@ -215,17 +333,19 @@ def generate_image_prompt(post_text: str) -> str:
 #  Platform-specific: 小红书
 # ─────────────────────────────────────────────
 
-def generate_xhs_post(topic: str, research_angle: str = "") -> str:
+def generate_xhs_post(topic: str, track: str = "investor", research_angle: str = "") -> str:
     """
     Generate a 小红书-optimised post in DeepSeek.
-    topic: what to write about
+
+    track: "investor" (finance/investment angle) or "consumer" (lifestyle/health angle)
     research_angle: optional angle from /research output
     """
+    system = _xhs_system(track)
     angle_note = f"\n参考角度：{research_angle}" if research_angle else ""
     return _deepseek(
-        DEEPSEEK_XHS_SYSTEM,
+        system,
         f"话题：{topic}{angle_note}\n\n写一篇小红书爆款帖子，附上标题和正文。",
-        max_tokens=1024,
+        max_tokens=1200,
     )
 
 
@@ -233,16 +353,21 @@ def generate_xhs_post(topic: str, research_angle: str = "") -> str:
 #  Platform-specific: Douyin video script
 # ─────────────────────────────────────────────
 
-def generate_douyin_script(topic: str, duration: str = "30秒", research_angle: str = "") -> str:
+def generate_douyin_script(
+    topic: str,
+    duration: str = "30秒",
+    track: str = "investor",
+    research_angle: str = "",
+) -> str:
     """
     Generate a Douyin video script.
-    topic: video topic
-    duration: target video length
-    research_angle: optional trending angle from /research
+
+    track: "investor" (data-led finance hook) or "consumer" (practical lifestyle hook)
     """
+    system = _douyin_system(track)
     angle_note = f"\n参考热门角度：{research_angle}" if research_angle else ""
     return _deepseek(
-        DEEPSEEK_DOUYIN_SYSTEM,
+        system,
         (
             f"话题：{topic}\n"
             f"目标时长：{duration}\n"
@@ -261,11 +386,15 @@ def generate_douyin_script(topic: str, duration: str = "30秒", research_angle: 
 #  Platform-specific: WeChat
 # ─────────────────────────────────────────────
 
-def generate_wechat_post(topic: str, format_type: str = "moments") -> str:
+def generate_wechat_post(topic: str, format_type: str = "moments", track: str = "investor") -> str:
     """
     Generate WeChat content.
-    format_type: "moments" (short) or "article" (long-form)
+
+    format_type: "moments" (short, founder voice) or "article" (long-form official account)
+    track: "investor" or "consumer"
     """
+    system = _deepseek_system(track)
+
     if format_type == "article":
         prompt = (
             f"为微信公众号写一篇关于「{topic}」的深度文章。\n"
@@ -282,4 +411,4 @@ def generate_wechat_post(topic: str, format_type: str = "moments") -> str:
             "重要：帖子用中文创作。同时在最后附上英文摘要（2-3句话），标注为「English Summary:」。"
         )
 
-    return _deepseek(DEEPSEEK_SYSTEM, prompt, max_tokens=1500)
+    return _deepseek(system, prompt, max_tokens=1500)

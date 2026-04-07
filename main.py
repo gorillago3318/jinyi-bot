@@ -10,9 +10,10 @@ import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update, Bot, BotCommand, BotCommandScopeChat
+from telegram import Update, Bot, BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     ContextTypes,
@@ -52,13 +53,13 @@ draft_state: dict[int, dict] = {}
 
 # ── Telegram command menu ────────────────────
 BOT_COMMANDS = [
-    BotCommand("draft",    "Write a bilingual post (EN + ZH)"),
-    BotCommand("xhs",      "Write a Xiaohongshu post"),
-    BotCommand("douyin",   "Write Douyin script + generate video"),
-    BotCommand("video",    "Generate a Kling video from a prompt"),
-    BotCommand("wechat",   "Write a WeChat post"),
+    BotCommand("draft",    "Bilingual post · /draft [investor|consumer] [topic]"),
+    BotCommand("xhs",      "Xiaohongshu post · /xhs [investor|consumer] [topic]"),
+    BotCommand("douyin",   "Douyin script + video · /douyin [investor|consumer] [topic]"),
+    BotCommand("video",    "Generate a Kling video from a visual prompt"),
+    BotCommand("wechat",   "WeChat post · /wechat [investor|consumer] [moments|article] [topic]"),
     BotCommand("research", "Research trending Xiaohongshu & Douyin topics"),
-    BotCommand("approve",  "Publish current draft"),
+    BotCommand("approve",  "Publish current draft to all channels"),
     BotCommand("image",    "Attach image to current draft"),
     BotCommand("bank",     "Show Did You Know post bank count"),
     BotCommand("status",   "Show scheduled jobs"),
@@ -66,18 +67,77 @@ BOT_COMMANDS = [
     BotCommand("start",    "Show all commands"),
 ]
 
-TIER2_TOPICS = [
-    "the health benefits of bird's nest for new mothers",
-    "why Borneo swiftlet nests command a premium price",
-    "what to look for when buying authentic bird's nest",
-    "JinYi's 20+ years of expertise in Sabah and Sarawak",
-    "the difference between white nest, red nest, and cave nest",
-    "sustainable harvesting practices in swiftlet farming",
-    "how to identify premium grade vs lower grade bird's nest",
-    "investing in a swiftlet house: what you need to know",
-    "the science behind bird's nest and skin health",
-    "how climate affects nest production in Borneo",
+# Default investor topics for random selection when no topic given
+TIER2_INVESTOR_TOPICS = [
+    "why swiftlet farming offers a different risk profile compared to REITs",
+    "JinYi's 20+ years of tracked yield data across Sabah and Sarawak",
+    "what asset ownership looks like in a managed swiftlet farm",
+    "the regulated supply chain that protects JinYi investors",
+    "how bird's nest commodity pricing has trended over the past decade",
+    "why location matters: Borneo vs other swiftlet farming regions",
+    "understanding harvest cycles and yield expectations",
+    "how JinYi's 36+ locations reduce concentration risk",
+    "the difference between owning a swiftlet asset vs a traditional property investment",
+    "why sophisticated investors are looking at alternative agricultural assets",
 ]
+
+# Default consumer topics
+TIER2_CONSUMER_TOPICS = [
+    "how to properly prepare bird's nest at home",
+    "the difference between cave nest and house nest",
+    "how to identify authentic bird's nest vs fake",
+    "why Sabah bird's nest commands a higher price",
+    "bird's nest storage tips to preserve quality",
+    "simple bird's nest recipe for daily consumption",
+    "what the grading system means for bird's nest quality",
+    "bird's nest for new mothers: what you need to know",
+]
+
+
+async def _send_kling_video(context: ContextTypes.DEFAULT_TYPE, chat_id: int, img_prompt: str, caption: str) -> None:
+    """
+    Generate a Kling video from an image prompt and send it to the owner.
+    Runs after content is posted — failure is non-fatal (just logs).
+    """
+    try:
+        visual_prompt = (
+            f"{img_prompt} "
+            "Cinematic vertical 9:16, premium brand aesthetic, Malaysian Borneo, "
+            "photorealistic, no text overlay, no people."
+        )
+        loop = asyncio.get_event_loop()
+        task_id = await loop.run_in_executor(
+            None,
+            lambda: submit_text_to_video(
+                prompt=visual_prompt,
+                duration=5,
+                aspect_ratio="9:16",
+                model="kling-v1-6",
+                mode="std",
+            ),
+        )
+        video_url = await loop.run_in_executor(None, poll_video_result, task_id)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp_path = tmp.name
+        await loop.run_in_executor(None, download_video, video_url, tmp_path)
+
+        with open(tmp_path, "rb") as vf:
+            await context.bot.send_video(
+                chat_id=chat_id,
+                video=vf,
+                caption=f"🎬 *Kling visual*\n{caption}",
+                parse_mode="Markdown",
+            )
+        Path(tmp_path).unlink(missing_ok=True)
+
+    except Exception as e:
+        logger.warning(f"Kling auto-visual failed (non-fatal): {e}")
+        await context.bot.send_message(
+            chat_id,
+            f"⚠️ Kling video generation failed: {e}\n_Content draft is still ready above._",
+            parse_mode="Markdown",
+        )
 
 
 def owner_only(func):
@@ -93,28 +153,178 @@ def owner_only(func):
 #  /start
 # ─────────────────────────────────────────────
 
+def _main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Inline keyboard for the main menu."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✍️ Draft (Investor)", callback_data="menu:draft:investor"),
+            InlineKeyboardButton("✍️ Draft (Consumer)", callback_data="menu:draft:consumer"),
+        ],
+        [
+            InlineKeyboardButton("📕 XHS (Investor)", callback_data="menu:xhs:investor"),
+            InlineKeyboardButton("📕 XHS (Consumer)", callback_data="menu:xhs:consumer"),
+        ],
+        [
+            InlineKeyboardButton("🎬 Douyin (Investor)", callback_data="menu:douyin:investor"),
+            InlineKeyboardButton("🎬 Douyin (Consumer)", callback_data="menu:douyin:consumer"),
+        ],
+        [
+            InlineKeyboardButton("💬 WeChat Moments", callback_data="menu:wechat:investor:moments"),
+            InlineKeyboardButton("📰 WeChat Article", callback_data="menu:wechat:investor:article"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Research Trends", callback_data="menu:research"),
+            InlineKeyboardButton("🎥 Quick Video", callback_data="menu:video"),
+        ],
+        [
+            InlineKeyboardButton("✅ Approve Draft", callback_data="menu:approve"),
+            InlineKeyboardButton("❌ Cancel Draft", callback_data="menu:cancel"),
+        ],
+        [
+            InlineKeyboardButton("📊 Status", callback_data="menu:status"),
+            InlineKeyboardButton("📚 Bank", callback_data="menu:bank"),
+        ],
+    ])
+
+
 @owner_only
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 *JinYi Content Bot*\n\n"
-        "*Content creation:*\n"
-        "/draft — Bilingual post (EN + ZH)\n"
-        "/xhs — Xiaohongshu post\n"
-        "/douyin — Douyin script + Kling video\n"
-        "/video — Quick Kling video from prompt\n"
-        "/wechat — WeChat post\n\n"
-        "*Research:*\n"
-        "/research — Trending topic ideas\n\n"
-        "*Draft management:*\n"
-        "/approve — Publish current draft\n"
-        "/image — Attach image to draft\n"
-        "/cancel — Discard draft\n\n"
-        "*Automation:*\n"
-        "/status — Scheduled jobs\n"
-        "/bank — Did You Know post count\n\n"
-        "Or just send a text, photo, or voice note and I'll draft a post.",
+        "Two tracks: *Investor* (HNW, asset management tone) · *Consumer* (health & lifestyle)\n\n"
+        "Tap a button to get started, or type `/draft [topic]` directly.",
         parse_mode="Markdown",
+        reply_markup=_main_menu_keyboard(),
     )
+
+
+async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline keyboard button presses from /start menu."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != OWNER_CHAT_ID:
+        return
+
+    data = query.data  # e.g. "menu:draft:investor"
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "draft":
+        track = parts[2] if len(parts) > 2 else "investor"
+        track_label = "Investor" if track == "investor" else "Consumer"
+        await query.edit_message_text(
+            f"✍️ *{track_label} Draft*\n\n"
+            f"Send me your topic and I'll write the post.\n"
+            f"Or just send anything and I'll pick a topic.\n\n"
+            f"Type: `/draft {track} [your topic]`",
+            parse_mode="Markdown",
+        )
+        context.user_data["pending_track"] = track
+        context.user_data["pending_command"] = "draft"
+
+    elif action == "xhs":
+        track = parts[2] if len(parts) > 2 else "investor"
+        track_label = "Investor" if track == "investor" else "Consumer"
+        await query.edit_message_text(
+            f"📕 *Xiaohongshu — {track_label}*\n\n"
+            f"Type: `/xhs {track} [your topic]`\n\n"
+            f"Or reply with just a topic and I'll create the post.",
+            parse_mode="Markdown",
+        )
+        context.user_data["pending_track"] = track
+        context.user_data["pending_command"] = "xhs"
+
+    elif action == "douyin":
+        track = parts[2] if len(parts) > 2 else "investor"
+        track_label = "Investor" if track == "investor" else "Consumer"
+        await query.edit_message_text(
+            f"🎬 *Douyin — {track_label}*\n\n"
+            f"Type: `/douyin {track} [your topic]`\n\n"
+            f"I'll write the script and generate a Kling video.",
+            parse_mode="Markdown",
+        )
+        context.user_data["pending_track"] = track
+        context.user_data["pending_command"] = "douyin"
+
+    elif action == "wechat":
+        track = parts[2] if len(parts) > 2 else "investor"
+        fmt = parts[3] if len(parts) > 3 else "moments"
+        track_label = "Investor" if track == "investor" else "Consumer"
+        fmt_label = "Article" if fmt == "article" else "Moments"
+        await query.edit_message_text(
+            f"💬 *WeChat {fmt_label} — {track_label}*\n\n"
+            f"Type: `/wechat {track} {fmt} [your topic]`",
+            parse_mode="Markdown",
+        )
+        context.user_data["pending_track"] = track
+        context.user_data["pending_command"] = f"wechat:{fmt}"
+
+    elif action == "research":
+        await query.edit_message_text("🔍 Running weekly research... (~30 seconds)")
+        try:
+            report = research_trending_content(num_ideas=5)
+            await context.bot.send_message(query.message.chat_id, report)
+        except Exception as e:
+            await context.bot.send_message(query.message.chat_id, f"Research failed: {e}")
+
+    elif action == "video":
+        await query.edit_message_text(
+            "🎥 *Quick Kling Video*\n\n"
+            "Type: `/video [visual description]`\n\n"
+            "Example: `/video swiftlet birds flying into nest house at golden hour borneo rainforest`",
+            parse_mode="Markdown",
+        )
+
+    elif action == "approve":
+        # Trigger approve inline
+        chat_id = query.message.chat_id
+        state = draft_state.get(chat_id)
+        if not state or not state.get("draft"):
+            await query.edit_message_text("No draft to approve. Create one first.")
+            return
+        await query.edit_message_text("Publishing...")
+        results = publish_all(
+            text=state["draft"],
+            telegram_channel=TELEGRAM_CHANNEL or None,
+            image_path=state.get("image_path"),
+        )
+        lines = [("✅" if ok else "❌") + f" {p.capitalize()}" for p, ok in results.items()]
+        await context.bot.send_message(chat_id, "Published:\n" + "\n".join(lines))
+        if state.get("image_path"):
+            Path(state["image_path"]).unlink(missing_ok=True)
+        draft_state.pop(chat_id, None)
+
+    elif action == "cancel":
+        chat_id = query.message.chat_id
+        if chat_id in draft_state:
+            del draft_state[chat_id]
+            await query.edit_message_text("Draft discarded.")
+        else:
+            await query.edit_message_text("No active draft.")
+
+    elif action == "status":
+        scheduler = context.bot_data.get("scheduler")
+        if not scheduler:
+            await query.edit_message_text("Scheduler not running.")
+            return
+        jobs = scheduler.get_jobs()
+        lines = ["📅 *Scheduled Jobs:*\n"]
+        for job in jobs:
+            next_run = job.next_run_time
+            t = next_run.strftime("%a %d %b, %I:%M %p MYT") if next_run else "N/A"
+            lines.append(f"• *{job.name}* — {t}")
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+
+    elif action == "bank":
+        bank = load_dyk_bank()
+        unused = count_unused_dyk(bank)
+        total = len(bank)
+        await query.edit_message_text(
+            f"📚 *Did You Know Bank:* {unused}/{total} posts remaining\n\n"
+            f"Sent Tue + Thu at 10am. At 2/week, ~{unused // 2} weeks of content left.",
+            parse_mode="Markdown",
+        )
 
 
 # ─────────────────────────────────────────────
@@ -125,27 +335,43 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     import random
     chat_id = update.effective_chat.id
-    brief = " ".join(context.args) if context.args else random.choice(TIER2_TOPICS)
+    args = list(context.args or [])
 
-    await update.message.reply_text(f"Writing post about: _{brief}_...", parse_mode="Markdown")
+    # Parse optional track flag as first word
+    track = "investor"
+    if args and args[0].lower() in ("investor", "consumer", "inv", "con", "i", "c"):
+        track = args.pop(0).lower()
+
+    brief = " ".join(args) if args else random.choice(
+        TIER2_INVESTOR_TOPICS if track in ("investor", "inv", "i") else TIER2_CONSUMER_TOPICS
+    )
+    track_label = "Investor" if track in ("investor", "inv", "i") else "Consumer"
+
+    await update.message.reply_text(
+        f"Writing *{track_label}* post: _{brief}_...", parse_mode="Markdown"
+    )
 
     try:
-        draft = generate_tier2_draft(brief)
+        draft = generate_tier2_draft(brief, track=track)
         img_prompt = generate_image_prompt(draft)
         draft_state[chat_id] = {
             "draft": draft,
+            "track": track,
             "image_path": None,
             "history": [
-                {"role": "user", "content": f"Write a post about: {brief}"},
+                {"role": "user", "content": f"Write a {track_label} post about: {brief}"},
                 {"role": "assistant", "content": draft},
             ],
         }
         await update.message.reply_text(
             f"{draft}\n\n———\n"
             "Reply with feedback to revise · /approve to publish · /cancel to discard\n\n"
-            f"🖼 *Image prompt:*\n`{img_prompt}`",
+            f"🖼 *Image prompt:*\n`{img_prompt}`\n\n"
+            "_🎬 Generating Kling visual in background..._",
             parse_mode="Markdown",
         )
+        # Fire Kling visual generation in background (non-blocking)
+        asyncio.create_task(_send_kling_video(context, chat_id, img_prompt, brief))
     except Exception as e:
         err = str(e)
         if "402" in err or "Insufficient Balance" in err:
@@ -165,30 +391,52 @@ async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @owner_only
 async def cmd_xhs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import random
     chat_id = update.effective_chat.id
-    topic = " ".join(context.args) if context.args else "bird's nest health benefits — real experience"
+    args = list(context.args or [])
 
-    await update.message.reply_text(f"Writing Xiaohongshu post: _{topic}_...", parse_mode="Markdown")
+    track = "investor"
+    if args and args[0].lower() in ("investor", "consumer", "inv", "con", "i", "c"):
+        track = args.pop(0).lower()
+
+    topic = " ".join(args) if args else random.choice(
+        TIER2_INVESTOR_TOPICS if track in ("investor", "inv", "i") else TIER2_CONSUMER_TOPICS
+    )
+    track_label = "Investor" if track in ("investor", "inv", "i") else "Consumer"
+
+    await update.message.reply_text(
+        f"Writing *{track_label}* Xiaohongshu post: _{topic}_...", parse_mode="Markdown"
+    )
 
     try:
-        post = generate_xhs_post(topic)
+        post = generate_xhs_post(topic, track=track)
         img_prompt = generate_image_prompt(post)
         draft_state[chat_id] = {
             "draft": post,
+            "track": track,
             "image_path": None,
             "history": [
-                {"role": "user", "content": f"Xiaohongshu topic: {topic}"},
+                {"role": "user", "content": f"Xiaohongshu {track_label} topic: {topic}"},
                 {"role": "assistant", "content": post},
             ],
         }
         await update.message.reply_text(
             f"{post}\n\n———\n"
             "Reply with feedback · /approve · /cancel\n\n"
-            f"🖼 *Image prompt:*\n`{img_prompt}`",
+            f"🖼 *Image prompt:*\n`{img_prompt}`\n\n"
+            "_🎬 Generating Kling visual in background..._",
             parse_mode="Markdown",
         )
+        asyncio.create_task(_send_kling_video(context, chat_id, img_prompt, topic))
     except Exception as e:
-        await update.message.reply_text(f"Failed: {e}")
+        err = str(e)
+        if "402" in err or "Insufficient Balance" in err:
+            await update.message.reply_text(
+                "⚠️ *DeepSeek out of credit.*\n\nTop up at: platform.deepseek.com → Billing → Top Up",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(f"Failed: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -197,19 +445,29 @@ async def cmd_xhs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @owner_only
 async def cmd_douyin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import random
     chat_id = update.effective_chat.id
     args = list(context.args or [])
 
-    # Optional duration as first arg: /douyin 10 topic...
+    # Parse track flag
+    track = "investor"
+    if args and args[0].lower() in ("investor", "consumer", "inv", "con", "i", "c"):
+        track = args.pop(0).lower()
+
+    # Optional duration as next arg: /douyin investor 10 topic...
     duration_sec = 5
     if args and args[0].isdigit():
         duration_sec = min(max(int(args.pop(0)), 5), 10)
 
-    topic = " ".join(args) if args else "is swiftlet farming investment worth it"
+    track_label = "Investor" if track in ("investor", "inv", "i") else "Consumer"
+    topic = " ".join(args) if args else random.choice(
+        TIER2_INVESTOR_TOPICS if track in ("investor", "inv", "i") else TIER2_CONSUMER_TOPICS
+    )
     duration_label = f"{duration_sec}s"
 
     await update.message.reply_text(
         f"🎬 *Douyin pipeline starting*\n\n"
+        f"Track: *{track_label}*\n"
         f"Topic: _{topic}_\n"
         f"Steps: DeepSeek script → Kling {duration_label} video\n\n"
         "_This takes about 2–3 minutes..._",
@@ -218,9 +476,16 @@ async def cmd_douyin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # Step 1 — Script
     try:
-        script = generate_douyin_script(topic, f"{duration_sec} seconds")
+        script = generate_douyin_script(topic, f"{duration_sec} seconds", track=track)
     except Exception as e:
-        await update.message.reply_text(f"Script generation failed: {e}")
+        err = str(e)
+        if "402" in err or "Insufficient Balance" in err:
+            await update.message.reply_text(
+                "⚠️ *DeepSeek out of credit.*\n\nTop up at: platform.deepseek.com → Billing → Top Up",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(f"Script generation failed: {e}")
         return
 
     await update.message.reply_text(
@@ -270,9 +535,10 @@ async def cmd_douyin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     draft_state[chat_id] = {
         "draft": script,
+        "track": track,
         "image_path": None,
         "history": [
-            {"role": "user", "content": f"Douyin script: {topic}"},
+            {"role": "user", "content": f"Douyin {track_label} script: {topic}"},
             {"role": "assistant", "content": script},
         ],
     }
@@ -322,25 +588,38 @@ async def cmd_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @owner_only
 async def cmd_wechat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import random
     chat_id = update.effective_chat.id
     args = list(context.args or [])
 
+    # Parse track flag
+    track = "investor"
+    if args and args[0].lower() in ("investor", "consumer", "inv", "con", "i", "c"):
+        track = args.pop(0).lower()
+
+    # Parse format flag
     fmt = "moments"
-    if args and args[0] in ("article", "moments"):
-        fmt = args.pop(0)
+    if args and args[0].lower() in ("article", "moments"):
+        fmt = args.pop(0).lower()
 
-    topic = " ".join(args) if args else "the unique advantage of Sabah swiftlet farming"
-    label = "article" if fmt == "article" else "Moments post"
+    track_label = "Investor" if track in ("investor", "inv", "i") else "Consumer"
+    topic = " ".join(args) if args else random.choice(
+        TIER2_INVESTOR_TOPICS if track in ("investor", "inv", "i") else TIER2_CONSUMER_TOPICS
+    )
+    fmt_label = "Article" if fmt == "article" else "Moments post"
 
-    await update.message.reply_text(f"Writing WeChat {label}: _{topic}_...", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"Writing WeChat *{track_label}* {fmt_label}: _{topic}_...", parse_mode="Markdown"
+    )
 
     try:
-        post = generate_wechat_post(topic, fmt)
+        post = generate_wechat_post(topic, fmt, track=track)
         draft_state[chat_id] = {
             "draft": post,
+            "track": track,
             "image_path": None,
             "history": [
-                {"role": "user", "content": f"WeChat {label}: {topic}"},
+                {"role": "user", "content": f"WeChat {track_label} {fmt_label}: {topic}"},
                 {"role": "assistant", "content": post},
             ],
         }
@@ -349,7 +628,14 @@ async def cmd_wechat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             parse_mode="Markdown",
         )
     except Exception as e:
-        await update.message.reply_text(f"Failed: {e}")
+        err = str(e)
+        if "402" in err or "Insufficient Balance" in err:
+            await update.message.reply_text(
+                "⚠️ *DeepSeek out of credit.*\n\nTop up at: platform.deepseek.com → Billing → Top Up",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(f"Failed: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -488,7 +774,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if state and state.get("draft"):
         await update.message.reply_text("Revising...")
         try:
-            revised = revise_draft(state["draft"], text, state["history"])
+            track = state.get("track", "investor")
+            revised = revise_draft(state["draft"], text, state["history"], track=track)
             state["history"].append({"role": "user", "content": text})
             state["history"].append({"role": "assistant", "content": revised})
             if len(state["history"]) > 10:
@@ -648,6 +935,9 @@ def main() -> None:
     app.add_handler(CommandHandler("cancel",   cmd_cancel))
     app.add_handler(CommandHandler("status",   cmd_status))
     app.add_handler(CommandHandler("bank",     cmd_bank))
+
+    # Inline keyboard button handler
+    app.add_handler(CallbackQueryHandler(handle_menu_callback, pattern="^menu:"))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
