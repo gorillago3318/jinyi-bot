@@ -48,6 +48,7 @@ from content import (
 from publisher import publish_all
 from scheduler import build_scheduler, load_dyk_bank, count_unused_dyk
 from researcher import research_trending_content, research_with_kimi_search
+from kling import submit_text_to_video, poll_video_result, download_video
 
 # ── Logging ──────────────────────────────────
 logging.basicConfig(
@@ -100,7 +101,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Commands:\n"
         "/draft — Bilingual post (Claude EN + DeepSeek ZH)\n"
         "/xhs [topic] — 小红书 post (DeepSeek)\n"
-        "/douyin [topic] — Douyin video script (DeepSeek)\n"
+        "/douyin [topic] — Douyin script + Kling video\n"
+        "/video [prompt] — Quick Kling video clip\n"
         "/wechat [topic] — WeChat post (DeepSeek)\n"
         "/research — 小红书 & Douyin trending ideas (Kimi)\n"
         "/approve — Publish current draft\n"
@@ -288,37 +290,145 @@ async def cmd_xhs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ─────────────────────────────────────────────
-#  /douyin — Douyin video script (DeepSeek)
+#  /douyin — Douyin script + Kling video generation
 # ─────────────────────────────────────────────
 
 @owner_only
 async def cmd_douyin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import tempfile
     chat_id = update.effective_chat.id
     args = context.args or []
-    # Check if last arg is a duration like "15秒" or "60秒"
-    duration = "30秒"
-    if args and args[-1].endswith("秒"):
-        duration = args.pop()
+
+    # Parse duration flag: /douyin 5 topic... or /douyin topic...
+    duration_sec = 5  # default 5s clip
+    if args and args[0].isdigit():
+        duration_sec = int(args.pop(0))
+        duration_sec = min(max(duration_sec, 5), 10)  # Kling supports 5 or 10
+
     topic = " ".join(args) if args else "燕窝养殖投资值不值得"
-    await update.message.reply_text(f"🎬 生成抖音脚本 ({duration})：_{topic}_...", parse_mode="Markdown")
+    duration_label = f"{duration_sec}秒"
+
+    await update.message.reply_text(
+        f"🎬 正在生成抖音内容：_{topic}_\n\n"
+        f"步骤：\n1️⃣ DeepSeek 写脚本\n2️⃣ Kling 生成视频 ({duration_label})\n\n_请稍候约2–3分钟..._",
+        parse_mode="Markdown",
+    )
+
+    # Step 1: Generate script with DeepSeek
     try:
-        script = generate_douyin_script(topic, duration)
+        script = generate_douyin_script(topic, duration_label)
+    except Exception as e:
+        await update.message.reply_text(f"❌ 脚本生成失败: {e}")
+        return
+
+    # Send script first so owner can read while video generates
+    await update.message.reply_text(
+        f"✅ *脚本已生成:*\n\n{script}\n\n_正在提交 Kling 生成视频..._",
+        parse_mode="Markdown",
+    )
+
+    # Step 2: Build a concise visual prompt from the topic for Kling
+    # Kling works best with descriptive visual prompts, not full scripts
+    visual_prompt = (
+        f"Premium bird's nest swiftlet farming in Sabah Borneo Malaysia. "
+        f"Topic: {topic}. "
+        f"Cinematic vertical video 9:16, warm golden tones, lush tropical forest, "
+        f"professional documentary style, no text overlay."
+    )
+
+    # Step 3: Submit to Kling and poll
+    try:
+        task_id = submit_text_to_video(
+            prompt=visual_prompt,
+            duration=duration_sec,
+            aspect_ratio="9:16",
+            model="kling-v1-6",
+            mode="std",
+        )
+        await update.message.reply_text(f"📤 Kling 任务已提交 (ID: `{task_id}`)\n_等待视频生成..._", parse_mode="Markdown")
+
+        # Poll in background — run blocking poll in thread executor
+        import asyncio
+        loop = asyncio.get_event_loop()
+        video_url = await loop.run_in_executor(None, poll_video_result, task_id)
+
+        # Download video
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp_path = tmp.name
+        await loop.run_in_executor(None, download_video, video_url, tmp_path)
+
+        # Send video to Telegram
+        with open(tmp_path, "rb") as vf:
+            await context.bot.send_video(
+                chat_id=chat_id,
+                video=vf,
+                caption=f"🎬 *{topic}*\n\n脚本已附上，手动发布至抖音。",
+                parse_mode="Markdown",
+            )
+
+        # Clean up
+        Path(tmp_path).unlink(missing_ok=True)
+
+        # Save script as draft for revision
         draft_state[chat_id] = {
             "draft": script,
             "image_path": None,
             "history": [
-                {"role": "user", "content": f"抖音脚本话题：{topic}，时长：{duration}"},
+                {"role": "user", "content": f"抖音脚本话题：{topic}"},
                 {"role": "assistant", "content": script},
             ],
         }
+        await update.message.reply_text("✅ 视频已发送。回复反馈可修改脚本，/cancel 放弃。")
+
+    except Exception as e:
+        logger.error(f"Kling video generation failed: {e}")
         await update.message.reply_text(
-            f"{script}\n\n———\n"
-            "回复反馈修改，/cancel 放弃。\n"
-            "_(抖音脚本仅供参考，无法直接发布)_",
+            f"⚠️ 视频生成失败: {e}\n\n脚本已保存，您可以手动录制。",
+        )
+        # Still save the script as draft
+        draft_state[chat_id] = {
+            "draft": script,
+            "image_path": None,
+            "history": [
+                {"role": "user", "content": f"抖音脚本话题：{topic}"},
+                {"role": "assistant", "content": script},
+            ],
+        }
+
+
+# ─────────────────────────────────────────────
+#  /video — Quick Kling video from a prompt
+# ─────────────────────────────────────────────
+
+@owner_only
+async def cmd_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import tempfile, asyncio
+    chat_id = update.effective_chat.id
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/video [prompt]`\nExample: `/video swiftlet birds flying into nest house at sunset borneo`",
             parse_mode="Markdown",
         )
+        return
+
+    prompt = " ".join(context.args)
+    await update.message.reply_text(f"🎬 Generating video...\n`{prompt}`\n\n_~2–3 minutes_", parse_mode="Markdown")
+
+    try:
+        task_id = submit_text_to_video(prompt=prompt, duration=5, aspect_ratio="9:16")
+        loop = asyncio.get_event_loop()
+        video_url = await loop.run_in_executor(None, poll_video_result, task_id)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp_path = tmp.name
+        await loop.run_in_executor(None, download_video, video_url, tmp_path)
+
+        with open(tmp_path, "rb") as vf:
+            await context.bot.send_video(chat_id=chat_id, video=vf, caption=f"🎬 `{prompt}`", parse_mode="Markdown")
+
+        Path(tmp_path).unlink(missing_ok=True)
     except Exception as e:
-        await update.message.reply_text(f"❌ 生成失败: {e}")
+        await update.message.reply_text(f"❌ Video generation failed: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -583,6 +693,7 @@ def main() -> None:
     app.add_handler(CommandHandler("xhs",      cmd_xhs))
     app.add_handler(CommandHandler("douyin",   cmd_douyin))
     app.add_handler(CommandHandler("wechat",   cmd_wechat))
+    app.add_handler(CommandHandler("video",    cmd_video))
 
     # Media handlers (Tier 3)
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
