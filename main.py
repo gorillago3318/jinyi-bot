@@ -147,7 +147,16 @@ async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode="Markdown",
         )
     except Exception as e:
-        await update.message.reply_text(f"Draft failed: {e}")
+        err = str(e)
+        if "402" in err or "Insufficient Balance" in err:
+            await update.message.reply_text(
+                "⚠️ *DeepSeek out of credit.*\n\n"
+                "Top up at: platform.deepseek.com → Billing → Top Up\n"
+                "Minimum $5. Then try again.",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(f"Draft failed: {e}")
 
 
 # ─────────────────────────────────────────────
