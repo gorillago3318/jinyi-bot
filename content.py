@@ -8,8 +8,11 @@ Model routing:
 """
 
 import anthropic
+import logging
 import os
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 # ── Clients ──────────────────────────────────
 claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -87,16 +90,21 @@ DEEPSEEK_DOUYIN_SYSTEM = """你是抖音爆款文案创作者，专注燕窝和�
 # ─────────────────────────────────────────────
 
 def _deepseek(system: str, user: str, max_tokens: int = 1024) -> str:
-    response = deepseek.chat.completions.create(
-        model="deepseek-chat",
-        max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=0.7,
-    )
-    return response.choices[0].message.content
+    try:
+        response = deepseek.chat.completions.create(
+            model="deepseek-chat",
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.7,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        # Fallback to Claude if DeepSeek is unavailable or out of credit
+        logger.warning(f"DeepSeek failed ({e}), falling back to Claude...")
+        return _claude(system, [{"role": "user", "content": user}], max_tokens=max_tokens)
 
 
 def _claude(system: str, messages: list[dict], max_tokens: int = 1024) -> str:
