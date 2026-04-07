@@ -102,18 +102,35 @@ TIER2_CONSUMER_TOPICS = [
 async def _generate_blog_background(
     context: ContextTypes.DEFAULT_TYPE, chat_id: int, topic: str, track: str
 ) -> None:
-    """Generate a long-form blog article in background and store in draft_state."""
+    """
+    Generate a long-form blog article in background.
+    - If draft still pending: store in draft_state for /approve to use.
+    - If draft already approved (race condition): post directly to website now.
+    """
     try:
         loop = asyncio.get_event_loop()
         article = await loop.run_in_executor(None, generate_blog_article, topic, track)
+
         if chat_id in draft_state:
+            # Draft still waiting — store for /approve
             draft_state[chat_id]["blog_article"] = article
-        await context.bot.send_message(
-            chat_id,
-            "📝 *Blog article ready* — will be saved to website on /approve.\n\n"
-            "_Preview:_\n" + article[:400] + "…",
-            parse_mode="Markdown",
-        )
+            await context.bot.send_message(
+                chat_id,
+                "📝 *Blog article ready* — will be saved to website on /approve.\n\n"
+                "_Preview:_\n" + article[:400] + "…",
+                parse_mode="Markdown",
+            )
+        else:
+            # Draft already approved — post directly to website now
+            from publisher import publish_to_website
+            ok = publish_to_website(title=topic, text=article, track=track)
+            status = "✅ saved to website blog" if ok else "❌ website save failed"
+            await context.bot.send_message(
+                chat_id,
+                f"📝 *Blog article posted* ({status})\n\n"
+                "_Preview:_\n" + article[:400] + "…",
+                parse_mode="Markdown",
+            )
     except Exception as e:
         logger.warning(f"Blog article generation failed (non-fatal): {e}")
 
