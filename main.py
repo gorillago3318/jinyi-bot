@@ -116,8 +116,9 @@ async def _generate_blog_background(
             draft_state[chat_id]["blog_article"] = article
             await context.bot.send_message(
                 chat_id,
-                "📝 *Blog article ready* — will be saved to website on /approve.\n\n"
-                "_Preview:_\n" + article[:400] + "…",
+                "📝 *Blog article ready!*\n\n"
+                "_Preview:_\n" + article[:400] + "…\n\n"
+                "✅ *Ready to publish — tap /approve now.*",
                 parse_mode="Markdown",
             )
         else:
@@ -368,8 +369,13 @@ async def cmd_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             f"{draft}\n\n———\n"
             "Reply with feedback to revise · /approve to publish · /cancel to discard\n\n"
-            f"🖼 *Image prompt:*\n`{img_prompt}`\n\n"
-            "_📝 Generating blog article in background..._",
+            "_📝 Generating blog article in background — wait for confirmation before /approve_",
+            parse_mode="Markdown",
+        )
+        # Send image prompt as separate message so it's easy to copy
+        await update.message.reply_text(
+            "🖼 *Image Prompt* — paste into Canva AI / Adobe Firefly / ideogram.ai:\n\n"
+            f"{img_prompt}",
             parse_mode="Markdown",
         )
         asyncio.create_task(_generate_blog_background(context, chat_id, brief, track))
