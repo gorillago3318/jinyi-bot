@@ -215,16 +215,20 @@ def _deepseek(system: str, user: str, max_tokens: int = 1024) -> str:
         ],
         temperature=0.7,
     )
+    if not response.choices or not response.choices[0].message.content:
+        raise ValueError("DeepSeek returned an empty response")
     return response.choices[0].message.content
 
 
 def _claude(system: str, messages: list[dict], max_tokens: int = 1024) -> str:
     response = claude.messages.create(
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-4-6",
         max_tokens=max_tokens,
         system=system,
         messages=messages,
     )
+    if not response.content or not hasattr(response.content[0], "text"):
+        raise ValueError("Claude returned an empty response")
     return response.content[0].text
 
 

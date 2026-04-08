@@ -244,7 +244,7 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🔍 Research Trends", callback_data="menu:research"),
-            InlineKeyboardButton("🎥 Quick Video", callback_data="menu:video"),
+            InlineKeyboardButton("💼 LinkedIn", callback_data="menu:linkedin"),
         ],
         [
             InlineKeyboardButton("✅ Approve Draft", callback_data="menu:approve"),
@@ -372,11 +372,11 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             await context.bot.send_message(query.message.chat_id, f"Research failed: {e}")
 
-    elif action == "video":
+    elif action == "linkedin":
         await query.edit_message_text(
-            "🎥 *Quick Kling Video*\n\n"
-            "Type: `/video [visual description]`\n\n"
-            "Example: `/video swiftlet birds flying into nest house at golden hour borneo rainforest`",
+            "💼 *LinkedIn Post*\n\n"
+            "Type: `/linkedin [investor|consumer] [topic]`\n\n"
+            "Example: `/linkedin investor swiftlet farming vs fixed deposit returns`",
             parse_mode="Markdown",
         )
 

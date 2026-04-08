@@ -131,7 +131,9 @@ async def job_dyk(bot: Bot) -> None:
         await bot.send_message(OWNER_CHAT_ID, f"📤 DYK posted (no channel set):\n\n{text}")
 
     # Publish to Facebook
-    publish_to_facebook(text)
+    fb_ok = publish_to_facebook(text)
+    if not fb_ok:
+        await bot.send_message(OWNER_CHAT_ID, "⚠️ DYK post: Facebook publish failed. Check FB token.")
 
     # Mark used
     bank = mark_dyk_used(bank, post["id"])
@@ -163,7 +165,9 @@ async def job_weekly_digest(bot: Bot) -> None:
         else:
             await bot.send_message(OWNER_CHAT_ID, f"📤 Weekly Digest (no channel set):\n\n{text}")
 
-        publish_to_facebook(text)
+        fb_ok = publish_to_facebook(text)
+        if not fb_ok:
+            await bot.send_message(OWNER_CHAT_ID, "⚠️ Weekly Digest: Facebook publish failed. Check FB token.")
         logger.info("Weekly Digest job done.")
     except Exception as e:
         logger.error(f"Weekly Digest job FAILED: {e}")
@@ -188,7 +192,9 @@ async def job_check_holidays(bot: Bot) -> None:
             else:
                 await bot.send_message(OWNER_CHAT_ID, f"📤 Holiday greeting (no channel set):\n\n{text}")
 
-            publish_to_facebook(text)
+            fb_ok = publish_to_facebook(text)
+            if not fb_ok:
+                await bot.send_message(OWNER_CHAT_ID, f"⚠️ Holiday greeting ({g['name']}): Facebook publish failed.")
 
             g["sent"] = True
             with open(HOLIDAYS_PATH, "w", encoding="utf-8") as f:

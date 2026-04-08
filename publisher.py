@@ -4,9 +4,11 @@ Platforms: Telegram channel/group, Facebook Page, Instagram (via Graph API)
 WordPress blog publishing is handled separately as a future step.
 """
 
+import base64
 import os
 import logging
 import re
+import time
 import requests
 
 logger = logging.getLogger(__name__)
@@ -135,12 +137,13 @@ def publish_to_instagram(text: str, image_url: str) -> bool:
 # ─────────────────────────────────────────────
 
 def _slugify(text: str) -> str:
-    """Convert a title/brief into a URL-safe slug."""
+    """Convert a title/brief into a URL-safe slug with timestamp to prevent collisions."""
     slug = text.lower().strip()
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_-]+", "-", slug)
-    slug = slug[:80].strip("-")
-    return slug or "post"
+    slug = slug[:60].strip("-")
+    suffix = str(int(time.time()))[-6:]  # last 6 digits of unix timestamp
+    return f"{slug or 'post'}-{suffix}"
 
 
 def _split_bilingual(text: str) -> tuple[str, str]:
@@ -160,6 +163,7 @@ def publish_to_website(
     track: str = "investor",
     video_url: str | None = None,
     image_url: str | None = None,
+    image_path: str | None = None,
 ) -> bool:
     """Publish a post to the website blog via the Next.js API route."""
     if not WEBSITE_URL or not BLOG_API_SECRET:
@@ -168,11 +172,19 @@ def publish_to_website(
 
     content_en, content_zh = _split_bilingual(text)
 
-    # Extract hashtags from EN section
     hashtag_match = re.findall(r"#\w+", content_en)
     hashtags = " ".join(hashtag_match) if hashtag_match else None
 
     slug = _slugify(title)
+
+    # Encode image as base64 if a local file path is provided
+    image_data: str | None = None
+    if image_path:
+        try:
+            with open(image_path, "rb") as f:
+                image_data = base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            logger.warning(f"Could not encode image for website: {e}")
 
     payload = {
         "secret": BLOG_API_SECRET,
@@ -184,13 +196,14 @@ def publish_to_website(
         "hashtags": hashtags,
         "video_url": video_url,
         "image_url": image_url,
+        "image_data": image_data,  # base64 PNG — website will upload to Supabase Storage
     }
 
     try:
         resp = requests.post(
             f"{WEBSITE_URL}/api/posts",
             json=payload,
-            timeout=30,
+            timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -235,10 +248,10 @@ def publish_all(
     if run_all or "website" in targets:
         results["website"] = publish_to_website(
             title=title,
-            text=blog_text or text,   # prefer long-form article for blog
+            text=blog_text or text,
             track=track,
             video_url=video_url,
-            image_url=None,
+            image_path=image_path,   # pass local file — website encodes and stores it
         )
 
     if instagram_image_url and (run_all or "instagram" in targets):
