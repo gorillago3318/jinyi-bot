@@ -109,55 +109,66 @@ async def _generate_images_background(
     topic: str,
 ) -> None:
     """
-    Generate post images via Imagen 3 in background.
-    Sends all format variants to owner as a media group.
-    Saves square image path to draft_state for blog upload.
+    Step 1: Use Kimi to find real XHS/Douyin visual references for the topic.
+    Step 2: Generate a single square image using that grounded prompt.
+    Step 3: Show it to user with [✅ Use This] [🔄 Try Again] [⏭ No Image] buttons.
+    On approval → generate remaining 3 formats silently.
     """
+    from researcher import research_visual_reference
+
+    await context.bot.send_message(
+        chat_id,
+        "🔍 Searching XHS/Douyin for real photo references...",
+    )
+
     try:
         loop = asyncio.get_event_loop()
-        paths = await loop.run_in_executor(None, generate_post_images, img_prompt)
 
-        if not paths:
-            await context.bot.send_message(chat_id, "⚠️ Image generation returned no results.")
-            return
+        # Step 1 — Kimi visual research
+        visual_ref = await loop.run_in_executor(None, research_visual_reference, topic)
 
-        # Save square image to draft_state for /approve blog upload
-        if chat_id in draft_state and "square" in paths:
-            draft_state[chat_id]["image_path"] = paths["square"]
+        # Build grounded prompt: real reference + original AI prompt combined
+        if visual_ref:
+            grounded_prompt = (
+                f"{img_prompt.rstrip('.')}. "
+                f"Visual reference from real XHS/Douyin photos: {visual_ref[:400]}"
+            )
+        else:
+            grounded_prompt = img_prompt
 
-        # Send images as labelled messages
-        labels = {
-            "square":   "🟫 Square — Blog / general",
-            "portrait": "📕 3:4 — XHS copy-paste",
-            "facebook": "📘 4:5 — Facebook feed",
-            "linkedin": "💼 16:9 — LinkedIn",
-        }
-        await context.bot.send_message(
-            chat_id,
-            "🖼 *Images ready!* Copy to your platforms:\n\n"
-            "• Square → Blog (auto-attached on /approve)\n"
-            "• 3:4 → XHS\n"
-            "• 4:5 → Facebook\n"
-            "• 16:9 → LinkedIn",
-            parse_mode="Markdown",
-        )
-        for fmt, path in paths.items():
-            if Path(path).exists():
-                with open(path, "rb") as f:
-                    await context.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=f,
-                        caption=labels.get(fmt, fmt),
-                    )
-                # Clean up non-square images (square kept for /approve)
-                if fmt != "square":
-                    Path(path).unlink(missing_ok=True)
+        # Store prompt in draft_state so we can regenerate on request
+        if chat_id in draft_state:
+            draft_state[chat_id]["img_prompt"] = grounded_prompt
+            draft_state[chat_id]["img_regen_count"] = 0
+
+        await context.bot.send_message(chat_id, "🎨 Generating image preview...")
+
+        # Step 2 — Generate square preview only
+        path = await loop.run_in_executor(None, generate_image, grounded_prompt, "square")
+
+        if chat_id in draft_state:
+            draft_state[chat_id]["img_preview_path"] = path
+
+        # Step 3 — Show with approve buttons
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Use This", callback_data="menu:imgapprove:use"),
+            InlineKeyboardButton("🔄 Try Again", callback_data="menu:imgapprove:regen"),
+            InlineKeyboardButton("⏭ No Image", callback_data="menu:imgapprove:skip"),
+        ]])
+        with open(path, "rb") as f:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=f,
+                caption="🖼 *Image preview* — approve or regenerate before we make all formats.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
 
     except Exception as e:
         logger.warning(f"Image generation failed (non-fatal): {e}")
         await context.bot.send_message(
             chat_id,
-            f"⚠️ Image generation failed: {e}\n_Use the image prompt above in Canva / Firefly manually._",
+            f"⚠️ Image generation failed: {e}\n_You can attach your own image with /image_",
             parse_mode="Markdown",
         )
 
@@ -257,19 +268,38 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+APPROVE_STEPS = ["blog", "facebook", "xhs", "linkedin", "douyin"]
+
+APPROVE_STEP_TEXT = {
+    "blog":     ("🌐", "Step 1 of 5 — Website Blog",         "Publish the long-form article to jinyi.com.my/blog?"),
+    "facebook": ("📘", "Step 2 of 5 — Facebook + Telegram",  "Post the social draft to Facebook and your Telegram channel?"),
+    "xhs":      ("📕", "Step 3 of 5 — XHS 小红书",           "Generate XHS copy-paste post for manual upload?"),
+    "linkedin": ("💼", "Step 4 of 5 — LinkedIn",             "Generate LinkedIn thought-leadership post for manual upload?"),
+    "douyin":   ("🎬", "Step 5 of 5 — Douyin Script",        "Generate Douyin video script for CapCut?"),
+}
+
 async def _approve_step(context, chat_id: int, step: str) -> None:
-    """Send the next approve step prompt with Yes/Skip inline buttons."""
-    STEP_TEXT = {
-        "facebook": "📘 *Step 1 of 3 — Facebook + Telegram Channel*\nPost the social draft to Facebook and your Telegram channel?",
-        "blog":     "🌐 *Step 2 of 3 — Website Blog*\nPublish the long-form article to jinyi.com.my/blog?",
-        "xhs":      "📋 *Step 3 of 3 — XHS + Douyin*\nGenerate XHS copy-paste block and Douyin script for manual posting?",
-    }
-    text = STEP_TEXT.get(step, "")
+    """Send the approval prompt for the given platform step."""
+    icon, title, question = APPROVE_STEP_TEXT[step]
+    text = f"{icon} *{title}*\n{question}"
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes", callback_data=f"menu:appstep:{step}:yes"),
         InlineKeyboardButton("⏭ Skip", callback_data=f"menu:appstep:{step}:skip"),
     ]])
     await context.bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+async def _next_approve_step(context, chat_id: int, current: str) -> None:
+    """Advance to the next approve step, or finish if done."""
+    idx = APPROVE_STEPS.index(current)
+    if idx + 1 < len(APPROVE_STEPS):
+        await _approve_step(context, chat_id, APPROVE_STEPS[idx + 1])
+    else:
+        # All steps done — clean up
+        state = draft_state.pop(chat_id, {})
+        if state.get("image_path"):
+            Path(state["image_path"]).unlink(missing_ok=True)
+        await context.bot.send_message(chat_id, "✅ *All done! Draft cleared.*", parse_mode="Markdown")
 
 
 async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -357,27 +387,47 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if not state or not state.get("draft"):
             await query.edit_message_text("No draft to approve. Create one first.")
             return
-        await _approve_step(context, chat_id, "facebook")
+        await _approve_step(context, chat_id, "blog")
 
     elif parts[1] == "appstep":
-        # approve step handler: parts = ["menu", "appstep", step, action]
-        # step: facebook | blog | xhs | done
-        # action: yes | skip
+        # parts = ["menu", "appstep", step, act]
+        # step: blog | facebook | xhs | linkedin | douyin
+        # act:  yes | skip
         chat_id = query.message.chat_id
-        step = parts[2]   # which step we just answered
-        act  = parts[3]   # yes or skip
+        step = parts[2]
+        act  = parts[3]
 
         state = draft_state.get(chat_id)
         if not state:
             await query.edit_message_text("Session expired. Create a new draft.")
             return
 
-        await query.answer()
+        loop = asyncio.get_event_loop()
 
-        if step == "facebook":
+        # ── Blog ──────────────────────────────────────────────
+        if step == "blog":
             if act == "yes":
-                await query.edit_message_text("📘 Posting to Facebook + Telegram channel...")
-                loop = asyncio.get_event_loop()
+                await query.edit_message_text("🌐 Posting to website blog...")
+                blog_content = state.get("blog_article") or state["draft"]
+                res = await loop.run_in_executor(None, lambda: publish_all(
+                    text=state["draft"],
+                    blog_text=blog_content,
+                    title=state.get("title", "JinYi Update"),
+                    track=state.get("track", "investor"),
+                    telegram_channel=None,
+                    image_path=state.get("image_path"),
+                    video_url=state.get("video_url"),
+                    targets=["website"],
+                ))
+                ok = res.get("website", False)
+                await context.bot.send_message(chat_id, "✅ Blog posted!" if ok else "❌ Blog post failed.")
+            else:
+                await query.edit_message_text("⏭ Skipped blog.")
+
+        # ── Facebook + Telegram ───────────────────────────────
+        elif step == "facebook":
+            if act == "yes":
+                await query.edit_message_text("📘 Posting to Facebook + Telegram...")
                 res = await loop.run_in_executor(None, lambda: publish_all(
                     text=state["draft"],
                     blog_text=None,
@@ -392,63 +442,58 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 await context.bot.send_message(chat_id, "\n".join(lines))
             else:
                 await query.edit_message_text("⏭ Skipped Facebook + Telegram.")
-            await _approve_step(context, chat_id, "blog")
 
-        elif step == "blog":
-            if act == "yes":
-                await context.bot.send_message(chat_id, "🌐 Posting to website blog...")
-                blog_content = state.get("blog_article") or state["draft"]
-                loop = asyncio.get_event_loop()
-                res = await loop.run_in_executor(None, lambda: publish_all(
-                    text=state["draft"],
-                    blog_text=blog_content,
-                    title=state.get("title", "JinYi Update"),
-                    track=state.get("track", "investor"),
-                    telegram_channel=None,
-                    image_path=state.get("image_path"),
-                    video_url=state.get("video_url"),
-                    targets=["website"],
-                ))
-                ok = res.get("website", False)
-                await context.bot.send_message(chat_id, "✅ Blog posted!" if ok else "❌ Blog post failed.")
-            else:
-                await context.bot.send_message(chat_id, "⏭ Skipped website blog.")
-            await _approve_step(context, chat_id, "xhs")
-
+        # ── XHS copy-paste ────────────────────────────────────
         elif step == "xhs":
             if act == "yes":
-                await context.bot.send_message(chat_id, "📋 Generating XHS + Douyin copy-paste blocks...")
+                await query.edit_message_text("📕 Generating XHS post...")
                 try:
-                    loop = asyncio.get_event_loop()
-                    blocks = await loop.run_in_executor(
-                        None, generate_copypaste_blocks,
+                    post = await loop.run_in_executor(
+                        None, generate_xhs_post,
                         state.get("title", "JinYi Update"),
                         state.get("track", "investor"),
                     )
-                    if len(blocks) > 4000:
-                        mid = blocks.find("━━━━━━━━━━━━━━━━━━━━\n🎬")
-                        if mid == -1:
-                            mid = len(blocks) // 2
-                        await context.bot.send_message(chat_id, blocks[:mid], parse_mode="Markdown")
-                        await context.bot.send_message(chat_id, blocks[mid:], parse_mode="Markdown")
-                    else:
-                        await context.bot.send_message(chat_id, blocks, parse_mode="Markdown")
+                    await context.bot.send_message(chat_id, f"📕 *XHS 小红书 — copy & paste:*\n\n{post}", parse_mode="Markdown")
                 except Exception as e:
-                    err = str(e)
-                    if "402" in err or "Insufficient Balance" in err:
-                        await context.bot.send_message(chat_id,
-                            "⚠️ *DeepSeek out of credit* — top up at platform.deepseek.com",
-                            parse_mode="Markdown")
-                    else:
-                        await context.bot.send_message(chat_id, f"XHS blocks failed: {e}")
+                    await context.bot.send_message(chat_id, f"❌ XHS generation failed: {e}")
             else:
-                await context.bot.send_message(chat_id, "⏭ Skipped XHS copy-paste.")
+                await query.edit_message_text("⏭ Skipped XHS.")
 
-            # All done — clean up
-            if state.get("image_path"):
-                Path(state["image_path"]).unlink(missing_ok=True)
-            draft_state.pop(chat_id, None)
-            await context.bot.send_message(chat_id, "✅ *Done! Draft cleared.*", parse_mode="Markdown")
+        # ── LinkedIn copy-paste ───────────────────────────────
+        elif step == "linkedin":
+            if act == "yes":
+                await query.edit_message_text("💼 Generating LinkedIn post...")
+                try:
+                    post = await loop.run_in_executor(
+                        None, generate_linkedin_post,
+                        state.get("title", "JinYi Update"),
+                        state.get("track", "investor"),
+                    )
+                    await context.bot.send_message(chat_id, f"💼 *LinkedIn — copy & paste:*\n\n{post}", parse_mode="Markdown")
+                except Exception as e:
+                    await context.bot.send_message(chat_id, f"❌ LinkedIn generation failed: {e}")
+            else:
+                await query.edit_message_text("⏭ Skipped LinkedIn.")
+
+        # ── Douyin script ─────────────────────────────────────
+        elif step == "douyin":
+            if act == "yes":
+                await query.edit_message_text("🎬 Generating Douyin script...")
+                try:
+                    script = await loop.run_in_executor(
+                        None, generate_douyin_script,
+                        state.get("title", "JinYi Update"),
+                        60,
+                        state.get("track", "investor"),
+                    )
+                    await context.bot.send_message(chat_id, f"🎬 *Douyin Script — copy into CapCut:*\n\n{script}", parse_mode="Markdown")
+                except Exception as e:
+                    await context.bot.send_message(chat_id, f"❌ Douyin script failed: {e}")
+            else:
+                await query.edit_message_text("⏭ Skipped Douyin.")
+
+        # Advance to next step (or finish)
+        await _next_approve_step(context, chat_id, step)
 
     elif action == "cancel":
         chat_id = query.message.chat_id
