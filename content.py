@@ -227,15 +227,28 @@ def _deepseek(system: str, user: str, max_tokens: int = 1024) -> str:
 
 
 def _claude(system: str, messages: list[dict], max_tokens: int = 1024) -> str:
-    response = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=max_tokens,
-        system=system,
-        messages=messages,
-    )
-    if not response.content or not hasattr(response.content[0], "text"):
-        raise ValueError("Claude returned an empty response")
-    return response.content[0].text
+    import time
+    last_err = None
+    for attempt in range(4):
+        try:
+            response = claude.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+            )
+            if not response.content or not hasattr(response.content[0], "text"):
+                raise ValueError("Claude returned an empty response")
+            return response.content[0].text
+        except anthropic.APIStatusError as e:
+            if e.status_code in (529, 529, 503, 502) and attempt < 3:
+                wait = 2 ** attempt * 3  # 3s, 6s, 12s
+                logger.warning(f"Claude overloaded (attempt {attempt + 1}) — retrying in {wait}s")
+                time.sleep(wait)
+                last_err = e
+            else:
+                raise
+    raise last_err
 
 
 # ─────────────────────────────────────────────
