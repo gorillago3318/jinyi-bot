@@ -1,5 +1,5 @@
 """
-imager.py — AI image generation via Google Imagen 3 (Google AI Studio)
+imager.py — AI image generation via Google Imagen 4 (Google AI Studio)
 
 Generates premium brand images for:
 - Blog posts (1:1 square)
@@ -66,10 +66,10 @@ def generate_image(
     aspect_ratio = ASPECT_RATIOS.get(format, "1:1")
     full_prompt = f"{prompt.rstrip('.')}. {BRAND_STYLE}"
 
-    logger.info(f"Generating Imagen 3 image — format={format} ({aspect_ratio})")
+    logger.info(f"Generating Imagen 4 image — format={format} ({aspect_ratio})")
 
     response = client.models.generate_images(
-        model="imagen-3.0-generate-002",
+        model="imagen-4.0-generate-001",
         prompt=full_prompt,
         config=types.GenerateImagesConfig(
             number_of_images=1,
