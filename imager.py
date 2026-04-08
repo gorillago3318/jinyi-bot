@@ -32,19 +32,14 @@ ASPECT_RATIOS = {
 
 # Brand style suffix appended to every prompt
 BRAND_STYLE = (
-    "Premium photorealistic quality. Dark moody luxury aesthetic. "
-    "Malaysian Borneo / Sabah jungle setting. Deep shadows, warm amber and gold accent lighting. "
-    "No text overlay. No people. No logos. No city skyline. No high-rise buildings. "
-    "Shot on medium format camera. Nature documentary and agricultural photography style. "
+    "Photorealistic, cinematic quality. Dark moody luxury aesthetic with deep shadows and warm amber-gold accent lighting. "
+    "Sabah, Malaysian Borneo tropical setting. "
+    "No text. No watermarks. No logos. No people. No city skyline. No high-rise or apartment buildings. "
+    "Shot on medium format camera. Nature documentary meets luxury editorial photography. "
     "Ultra high resolution. "
-    # ── Swiftlet farm architecture constraints ──
-    "If architecture is shown: it must be a SWIFTLET FARM — a low-rise 2 to 4 storey "
-    "plain rectangular concrete or brick building, maximum 4 floors tall, standalone structure "
-    "surrounded by tropical jungle or palm trees. "
-    "The facade has rows of small circular or rectangular bird entry holes, NOT windows. "
-    "NOT an apartment block. NOT a commercial tower. NOT a shophouse row. NOT a skyscraper. "
-    "Swiftlets (small birds) may be seen flying around the building at dusk or dawn. "
-    "Misty tropical rainforest background. Sabah Borneo rural landscape."
+    "IMPORTANT — swiftlet farm buildings are low-rise 2 to 4 storey plain concrete rectangles with small bird entry holes on the facade, "
+    "surrounded by tropical jungle. Edible bird nests are white crescent-shaped saliva structures. "
+    "Never generate generic industrial equipment, random machinery, or city architecture."
 )
 
 

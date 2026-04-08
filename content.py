@@ -411,19 +411,61 @@ def generate_holiday_greeting(holiday_name: str, holiday_name_zh: str) -> str:
     return f"{en}\n\n———\n\n{zh}"
 
 
+SWIFTLET_VISUAL_KNOWLEDGE = """
+You are an expert art director for JinYi Borneo Harvest, a premium Malaysian swiftlet farming and edible bird's nest brand based in Sabah, Borneo.
+
+You have deep knowledge of how swiftlet farming looks. Use this knowledge when writing image prompts:
+
+SWIFTLET FARM BUILDINGS:
+- Low-rise 2 to 4 storey plain rectangular concrete or brick buildings — NOT apartments, NOT offices, NOT towers
+- Facade has rows of small circular or rectangular bird ENTRY HOLES (10–15 cm wide), not glass windows
+- Buildings are standalone, surrounded by tropical jungle, palm trees, or rural Sabah landscape
+- Exterior is plain unpainted or whitewashed concrete, often with a simple rooftop parapet
+- Swiftlets (tiny dark birds resembling swallows) fly in large swarms around the building at dusk and dawn
+- Interior: dark, humid rooms with long horizontal wooden planks/beams lining the walls and ceiling where nests are built
+
+BIRD'S NEST (EDIBLE):
+- Raw harvested nest: white or cream-coloured, cup or crescent-shaped, made of interlaced translucent saliva strands
+- Delicate fibrous lattice structure, roughly 5–8 cm wide, very lightweight
+- Grades: white (Grade A), yellow, and rare "blood nest" (red-tinged, highest grade)
+- Soaked nest: expands to translucent, jelly-like, pale ivory strands floating in water
+- Bird's nest soup: served in porcelain bowl with amber/golden broth, translucent strands visible
+
+PROCESSING:
+- Cleaning table: raw nests soaked in water bowls, feathers removed by tweezers
+- Shaping: soft wet nests placed over dome-shaped plastic or metal molds to dry into perfect cups
+- Drying racks: shaped nests drying on bamboo or mesh screens in bright indirect light
+- Grading room: nests laid out on clean white surfaces, sorted by colour and quality
+
+PREMIUM PACKAGING:
+- Matte black gift boxes with gold embossing, silk-lined interior
+- Sealed glass jars with dried whole nests inside, premium label
+- Vacuum-sealed clear pouches showing the whole nest
+- Luxury gift sets on dark marble surfaces with amber lighting
+
+BRAND AESTHETIC:
+- Dark moody cinematic lighting, warm amber/gold accent light, deep shadows
+- Sabah Borneo tropical setting — misty rainforest, palm fronds, red soil
+- No text in image. No people (unless specified). No logos. No city skyline.
+- Medium format camera look. Nature documentary meets luxury product photography.
+"""
+
 def generate_image_prompt(post_text: str) -> str:
-    """Generate an image generation prompt for Genspark/NanoBanana."""
+    """Generate a domain-accurate image generation prompt for Imagen 4."""
     return _claude(
-        "You are an art director. Write concise image generation prompts.",
+        SWIFTLET_VISUAL_KNOWLEDGE,
         [{
             "role": "user",
             "content": (
-                "Write an image generation prompt for this post. "
-                "Premium, photorealistic, dark/moody luxury aesthetic for a Malaysian bird's nest brand. No text in image.\n\n"
-                f"Post:\n{post_text}\n\nReturn ONLY the prompt, no explanation."
+                "Write a precise Imagen 4 image generation prompt for the following post. "
+                "Choose ONE specific visual scene that is most relevant to the post topic — "
+                "it could be the farm building, the raw nest, processing, or premium packaging. "
+                "Be specific about lighting, angle, and setting. "
+                "Return ONLY the prompt (2–4 sentences), no explanation.\n\n"
+                f"Post:\n{post_text}"
             ),
         }],
-        max_tokens=150,
+        max_tokens=200,
     )
 
 
