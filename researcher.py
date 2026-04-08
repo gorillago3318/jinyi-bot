@@ -160,3 +160,53 @@ def research_with_kimi_search(query: str) -> str:
     except Exception as e:
         logger.error(f"Kimi search failed: {e}")
         return f"❌ Search failed: {e}"
+
+
+def research_visual_reference(topic: str) -> str:
+    """
+    Use Kimi to search XHS and Douyin for REAL photos related to the topic.
+    Returns a detailed visual description of what real content looks like —
+    to be used as a grounded reference for Imagen image generation.
+    """
+    if not KIMI_API_KEY:
+        return ""
+
+    client = OpenAI(
+        api_key=KIMI_API_KEY,
+        base_url=KIMI_BASE_URL,
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="moonshot-v1-8k",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a visual research assistant. "
+                        "Search XHS (小红书) and Douyin for real photos related to the given topic. "
+                        "Describe in precise visual terms what the most popular real photos look like — "
+                        "colours, lighting, composition, setting, objects visible, angle. "
+                        "Focus only on visuals, not text or captions. "
+                        "Reply in English. Be specific and concrete."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Search XHS and Douyin for real photos about: \"{topic}\" in the context of "
+                        f"swiftlet farming and edible bird's nest (燕窝).\n\n"
+                        f"Describe in detail what the most popular and engaging real photos look like. "
+                        f"Include: lighting style, colour palette, specific objects shown, setting/background, "
+                        f"camera angle, mood. Give me 2-3 distinct visual scene descriptions I can use "
+                        f"as reference to generate a similar photo. Keep each scene to 3-4 sentences."
+                    ),
+                },
+            ],
+            temperature=0.4,
+        )
+        return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        logger.warning(f"Visual reference research failed: {e}")
+        return ""
