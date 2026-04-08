@@ -1,7 +1,7 @@
-python-telegram-bot==21.6
+python-telegram-bot==21.11.1
 apscheduler==3.10.4
-anthropic==0.49.0
-openai==1.75.0
+anthropic==0.91.0
+openai==1.109.1
 requests==2.32.3
 python-dotenv==1.0.1
 pytz==2024.2
