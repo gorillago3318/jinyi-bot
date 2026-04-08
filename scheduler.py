@@ -66,18 +66,32 @@ def count_unused_dyk(bank: list[dict]) -> int:
 #  Holiday greetings helpers
 # ─────────────────────────────────────────────
 
-HOLIDAYS_2026 = [
-    {"date": "2026-01-01", "name": "New Year's Day",       "name_zh": "元旦"},
-    {"date": "2026-01-29", "name": "Chinese New Year Eve",  "name_zh": "除夕"},
-    {"date": "2026-01-30", "name": "Chinese New Year",      "name_zh": "农历新年"},
-    {"date": "2026-01-31", "name": "Chinese New Year Day 2","name_zh": "农历新年初二"},
-    {"date": "2026-03-20", "name": "Hari Raya Aidilfitri",  "name_zh": "开斋节"},
-    {"date": "2026-05-01", "name": "Labour Day",            "name_zh": "劳动节"},
-    {"date": "2026-05-25", "name": "Hari Raya Aidiladha",   "name_zh": "哈芝节"},
-    {"date": "2026-08-31", "name": "National Day",          "name_zh": "国庆日"},
-    {"date": "2026-09-16", "name": "Malaysia Day",          "name_zh": "马来西亚日"},
-    {"date": "2026-12-25", "name": "Christmas",             "name_zh": "圣诞节"},
-]
+HOLIDAYS_BY_YEAR: dict[int, list[dict]] = {
+    2026: [
+        {"date": "2026-01-01", "name": "New Year's Day",        "name_zh": "元旦"},
+        {"date": "2026-01-29", "name": "Chinese New Year Eve",   "name_zh": "除夕"},
+        {"date": "2026-01-30", "name": "Chinese New Year",       "name_zh": "农历新年"},
+        {"date": "2026-01-31", "name": "Chinese New Year Day 2", "name_zh": "农历新年初二"},
+        {"date": "2026-03-20", "name": "Hari Raya Aidilfitri",   "name_zh": "开斋节"},
+        {"date": "2026-05-01", "name": "Labour Day",             "name_zh": "劳动节"},
+        {"date": "2026-05-25", "name": "Hari Raya Aidiladha",    "name_zh": "哈芝节"},
+        {"date": "2026-08-31", "name": "National Day",           "name_zh": "国庆日"},
+        {"date": "2026-09-16", "name": "Malaysia Day",           "name_zh": "马来西亚日"},
+        {"date": "2026-12-25", "name": "Christmas",              "name_zh": "圣诞节"},
+    ],
+    2027: [
+        {"date": "2027-01-01", "name": "New Year's Day",        "name_zh": "元旦"},
+        {"date": "2027-01-16", "name": "Chinese New Year Eve",   "name_zh": "除夕"},
+        {"date": "2027-01-17", "name": "Chinese New Year",       "name_zh": "农历新年"},
+        {"date": "2027-01-18", "name": "Chinese New Year Day 2", "name_zh": "农历新年初二"},
+        {"date": "2027-03-09", "name": "Hari Raya Aidilfitri",   "name_zh": "开斋节"},
+        {"date": "2027-05-01", "name": "Labour Day",             "name_zh": "劳动节"},
+        {"date": "2027-05-16", "name": "Hari Raya Aidiladha",    "name_zh": "哈芝节"},
+        {"date": "2027-08-31", "name": "National Day",           "name_zh": "国庆日"},
+        {"date": "2027-09-16", "name": "Malaysia Day",           "name_zh": "马来西亚日"},
+        {"date": "2027-12-25", "name": "Christmas",              "name_zh": "圣诞节"},
+    ],
+}
 
 
 def load_or_generate_holidays(bot: Bot = None) -> list[dict]:
@@ -86,9 +100,12 @@ def load_or_generate_holidays(bot: Bot = None) -> list[dict]:
         with open(HOLIDAYS_PATH, encoding="utf-8") as f:
             return json.load(f)
 
-    logger.info("Generating holiday greetings via Claude (one-time batch)...")
+    current_year = datetime.now(MYT).year
+    holidays = HOLIDAYS_BY_YEAR.get(current_year, HOLIDAYS_BY_YEAR[2026])
+
+    logger.info(f"Generating {current_year} holiday greetings via Claude (one-time batch)...")
     greetings = []
-    for h in HOLIDAYS_2026:
+    for h in holidays:
         try:
             text = generate_holiday_greeting(h["name"], h["name_zh"])
             greetings.append({"date": h["date"], "name": h["name"], "text": text, "sent": False})
