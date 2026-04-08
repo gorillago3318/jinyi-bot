@@ -257,6 +257,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def _approve_step(context, chat_id: int, step: str) -> None:
+    """Send the next approve step prompt with Yes/Skip inline buttons."""
+    STEP_TEXT = {
+        "facebook": "📘 *Step 1 of 3 — Facebook + Telegram Channel*\nPost the social draft to Facebook and your Telegram channel?",
+        "blog":     "🌐 *Step 2 of 3 — Website Blog*\nPublish the long-form article to jinyi.com.my/blog?",
+        "xhs":      "📋 *Step 3 of 3 — XHS + Douyin*\nGenerate XHS copy-paste block and Douyin script for manual posting?",
+    }
+    text = STEP_TEXT.get(step, "")
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes", callback_data=f"menu:appstep:{step}:yes"),
+        InlineKeyboardButton("⏭ Skip", callback_data=f"menu:appstep:{step}:skip"),
+    ]])
+    await context.bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
+
+
 async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle inline keyboard button presses from /start menu."""
     query = update.callback_query
@@ -336,27 +351,104 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
     elif action == "approve":
-        # Trigger approve inline
+        # Start step-by-step approve flow
         chat_id = query.message.chat_id
         state = draft_state.get(chat_id)
         if not state or not state.get("draft"):
             await query.edit_message_text("No draft to approve. Create one first.")
             return
-        await query.edit_message_text("Publishing...")
-        results = publish_all(
-            text=state["draft"],
-            blog_text=state.get("blog_article") or state["draft"],
-            title=state.get("title", "JinYi Update"),
-            track=state.get("track", "investor"),
-            telegram_channel=TELEGRAM_CHANNEL or None,
-            image_path=state.get("image_path"),
-            video_url=state.get("video_url"),
-        )
-        lines = [("✅" if ok else "❌") + f" {p.capitalize()}" for p, ok in results.items()]
-        await context.bot.send_message(chat_id, "Published:\n" + "\n".join(lines))
-        if state.get("image_path"):
-            Path(state["image_path"]).unlink(missing_ok=True)
-        draft_state.pop(chat_id, None)
+        await _approve_step(context, chat_id, "facebook")
+
+    elif parts[1] == "appstep":
+        # approve step handler: parts = ["menu", "appstep", step, action]
+        # step: facebook | blog | xhs | done
+        # action: yes | skip
+        chat_id = query.message.chat_id
+        step = parts[2]   # which step we just answered
+        act  = parts[3]   # yes or skip
+
+        state = draft_state.get(chat_id)
+        if not state:
+            await query.edit_message_text("Session expired. Create a new draft.")
+            return
+
+        await query.answer()
+
+        if step == "facebook":
+            if act == "yes":
+                await query.edit_message_text("📘 Posting to Facebook + Telegram channel...")
+                loop = asyncio.get_event_loop()
+                res = await loop.run_in_executor(None, lambda: publish_all(
+                    text=state["draft"],
+                    blog_text=None,
+                    title=state.get("title", "JinYi Update"),
+                    track=state.get("track", "investor"),
+                    telegram_channel=TELEGRAM_CHANNEL or None,
+                    image_path=state.get("image_path"),
+                    video_url=state.get("video_url"),
+                    targets=["facebook", "telegram"],
+                ))
+                lines = [("✅" if ok else "❌") + f" {p.capitalize()}" for p, ok in res.items()]
+                await context.bot.send_message(chat_id, "\n".join(lines))
+            else:
+                await query.edit_message_text("⏭ Skipped Facebook + Telegram.")
+            await _approve_step(context, chat_id, "blog")
+
+        elif step == "blog":
+            if act == "yes":
+                await context.bot.send_message(chat_id, "🌐 Posting to website blog...")
+                blog_content = state.get("blog_article") or state["draft"]
+                loop = asyncio.get_event_loop()
+                res = await loop.run_in_executor(None, lambda: publish_all(
+                    text=state["draft"],
+                    blog_text=blog_content,
+                    title=state.get("title", "JinYi Update"),
+                    track=state.get("track", "investor"),
+                    telegram_channel=None,
+                    image_path=state.get("image_path"),
+                    video_url=state.get("video_url"),
+                    targets=["website"],
+                ))
+                ok = res.get("website", False)
+                await context.bot.send_message(chat_id, "✅ Blog posted!" if ok else "❌ Blog post failed.")
+            else:
+                await context.bot.send_message(chat_id, "⏭ Skipped website blog.")
+            await _approve_step(context, chat_id, "xhs")
+
+        elif step == "xhs":
+            if act == "yes":
+                await context.bot.send_message(chat_id, "📋 Generating XHS + Douyin copy-paste blocks...")
+                try:
+                    loop = asyncio.get_event_loop()
+                    blocks = await loop.run_in_executor(
+                        None, generate_copypaste_blocks,
+                        state.get("title", "JinYi Update"),
+                        state.get("track", "investor"),
+                    )
+                    if len(blocks) > 4000:
+                        mid = blocks.find("━━━━━━━━━━━━━━━━━━━━\n🎬")
+                        if mid == -1:
+                            mid = len(blocks) // 2
+                        await context.bot.send_message(chat_id, blocks[:mid], parse_mode="Markdown")
+                        await context.bot.send_message(chat_id, blocks[mid:], parse_mode="Markdown")
+                    else:
+                        await context.bot.send_message(chat_id, blocks, parse_mode="Markdown")
+                except Exception as e:
+                    err = str(e)
+                    if "402" in err or "Insufficient Balance" in err:
+                        await context.bot.send_message(chat_id,
+                            "⚠️ *DeepSeek out of credit* — top up at platform.deepseek.com",
+                            parse_mode="Markdown")
+                    else:
+                        await context.bot.send_message(chat_id, f"XHS blocks failed: {e}")
+            else:
+                await context.bot.send_message(chat_id, "⏭ Skipped XHS copy-paste.")
+
+            # All done — clean up
+            if state.get("image_path"):
+                Path(state["image_path"]).unlink(missing_ok=True)
+            draft_state.pop(chat_id, None)
+            await context.bot.send_message(chat_id, "✅ *Done! Draft cleared.*", parse_mode="Markdown")
 
     elif action == "cancel":
         chat_id = query.message.chat_id
@@ -786,57 +878,8 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("No draft to approve. Use /draft to create one.")
         return
 
-    await update.message.reply_text("Publishing...")
-
-    title = state.get("title", "JinYi Update")
-    track = state.get("track", "investor")
-
-    # Use long-form blog article for website if available, otherwise use social post
-    blog_content = state.get("blog_article") or state["draft"]
-
-    results = publish_all(
-        text=state["draft"],          # short social post → Facebook + Telegram
-        blog_text=blog_content,       # long article → website blog
-        title=title,
-        track=track,
-        telegram_channel=TELEGRAM_CHANNEL or None,
-        image_path=state.get("image_path"),
-        video_url=state.get("video_url"),
-    )
-
-    lines = [("✅" if ok else "❌") + f" {p.capitalize()}" for p, ok in results.items()]
-    await update.message.reply_text("Published:\n" + "\n".join(lines))
-
-    img_path = state.get("image_path")
-    if img_path:
-        Path(img_path).unlink(missing_ok=True)
-
-    del draft_state[chat_id]
-
-    # Send XHS + Douyin copy-paste blocks
-    await update.message.reply_text(
-        "Generating XHS + Douyin copy-paste blocks...", parse_mode="Markdown"
-    )
-    try:
-        loop = asyncio.get_event_loop()
-        blocks = await loop.run_in_executor(None, generate_copypaste_blocks, title, track)
-        # Send in chunks if too long for one message
-        if len(blocks) > 4000:
-            mid = blocks.find("━━━━━━━━━━━━━━━━━━━━\n🎬")
-            await update.message.reply_text(blocks[:mid], parse_mode="Markdown")
-            await update.message.reply_text(blocks[mid:], parse_mode="Markdown")
-        else:
-            await update.message.reply_text(blocks, parse_mode="Markdown")
-    except Exception as e:
-        err = str(e)
-        if "402" in err or "Insufficient Balance" in err:
-            await update.message.reply_text(
-                "⚠️ *DeepSeek out of credit* — copy-paste blocks skipped.\n"
-                "Top up at: platform.deepseek.com",
-                parse_mode="Markdown",
-            )
-        else:
-            await update.message.reply_text(f"Copy-paste blocks failed: {e}")
+    # Start the step-by-step publish flow
+    await _approve_step(context, chat_id, "facebook")
 
 
 # ─────────────────────────────────────────────

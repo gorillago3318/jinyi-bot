@@ -214,27 +214,34 @@ def publish_all(
     image_path: str | None = None,
     instagram_image_url: str | None = None,
     video_url: str | None = None,
+    targets: list[str] | None = None,
 ) -> dict:
     """
-    Publish to all configured platforms.
+    Publish to configured platforms.
+    targets: optional list to restrict which platforms to post to.
+             e.g. ["facebook", "telegram"] or ["website"]
+             If None, posts to all platforms.
     Returns a dict of results: { "telegram": bool, "facebook": bool, "website": bool }
     """
     results = {}
+    run_all = targets is None
 
-    if telegram_channel:
+    if (run_all or "telegram" in targets) and telegram_channel:
         results["telegram"] = publish_to_telegram_channel(telegram_channel, text, image_path)
 
-    results["facebook"] = publish_to_facebook(text, image_path)
+    if run_all or "facebook" in targets:
+        results["facebook"] = publish_to_facebook(text, image_path)
 
-    results["website"] = publish_to_website(
-        title=title,
-        text=blog_text or text,   # prefer long-form article for blog
-        track=track,
-        video_url=video_url,
-        image_url=None,
-    )
+    if run_all or "website" in targets:
+        results["website"] = publish_to_website(
+            title=title,
+            text=blog_text or text,   # prefer long-form article for blog
+            track=track,
+            video_url=video_url,
+            image_url=None,
+        )
 
-    if instagram_image_url:
+    if instagram_image_url and (run_all or "instagram" in targets):
         results["instagram"] = publish_to_instagram(text, instagram_image_url)
 
     return results
